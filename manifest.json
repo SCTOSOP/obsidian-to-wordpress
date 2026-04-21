@@ -1,0 +1,10 @@
+{
+  "id": "obsidian-to-wordpress-demo",
+  "name": "Obsidian to WordPress Demo",
+  "version": "0.1.0",
+  "minAppVersion": "1.5.0",
+  "description": "Publish the current Obsidian note to a self-hosted WordPress site via REST API.",
+  "author": "",
+  "authorUrl": "",
+  "isDesktopOnly": false
+}
