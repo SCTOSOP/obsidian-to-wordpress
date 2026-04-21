@@ -1,6 +1,10 @@
-# Obsidian to WordPress Demo
+# Obsidian to WordPress
 
-Minimal Obsidian plugin demo for publishing the current note to a self-hosted WordPress site through the WordPress REST API using WordPress Application Passwords.
+Obsidian plugin for publishing the current note to a self-hosted WordPress site through the WordPress REST API using WordPress Application Passwords.
+
+## Release Status
+
+Current release target: `1.0.0-beta.1`. This beta is intended for early testing; features will continue to be added incrementally.
 
 ## Supported
 
@@ -176,7 +180,7 @@ npm run build
 For local Obsidian testing, copy or symlink this folder into:
 
 ```text
-<your-vault>/.obsidian/plugins/obsidian-to-wordpress-demo
+<your-vault>/.obsidian/plugins/obsidian-to-wordpress
 ```
 
 Then enable the plugin in Obsidian community plugin settings.
@@ -299,3 +303,30 @@ If the PHP snippet seems unchanged:
 - Hard-refresh the browser with `Cmd + Shift + R` on macOS.
 - Check the page source for `mermaid.min.js`.
 - Check the Network tab for a successful `mermaid.min.js` request.
+
+## Secret Storage
+
+Sensitive values are stored through a `SecretStore` abstraction. On Obsidian desktop, the plugin uses Electron `safeStorage` when available.
+
+Encrypted values:
+
+- WordPress Application Password
+- Aliyun OSS AccessKey Secret
+
+The normal plugin `data.json` stores only encrypted blobs in `encryptedSecrets` plus boolean flags such as `applicationPasswordSaved` and `accessKeySecretSaved`.
+
+Platform behavior:
+
+- macOS: Electron safeStorage uses Keychain-backed protection.
+- Windows: Electron safeStorage uses DPAPI-backed protection.
+- Linux: Electron safeStorage depends on the desktop secret store. If the backend is `basic_text`, the plugin shows a warning because protection is weak.
+
+Security boundaries:
+
+- This protects secrets at rest in the local plugin data file.
+- This does not protect against malware running as the same OS user, malicious Obsidian plugins, or memory inspection while the plugin is running.
+- Debug logs redact common secret fields and signed URL parameters, but avoid sharing logs unless necessary.
+
+Migration:
+
+- If old plaintext values are found in plugin settings, they are migrated into encrypted storage on load and then removed from plaintext settings.

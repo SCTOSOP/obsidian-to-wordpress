@@ -108,17 +108,13 @@ function stripFrontmatter(rawContent) {
   return rawContent.slice(end + "\n---".length).replace(/^\n/, "");
 }
 function normalizeStringList(value) {
-  if (!value)
-    return [];
-  if (Array.isArray(value))
-    return value.map(String).map((item) => item.trim()).filter(Boolean);
-  if (typeof value === "string")
-    return value.split(",").map((item) => item.trim()).filter(Boolean);
+  if (!value) return [];
+  if (Array.isArray(value)) return value.map(String).map((item) => item.trim()).filter(Boolean);
+  if (typeof value === "string") return value.split(",").map((item) => item.trim()).filter(Boolean);
   return [];
 }
 function emptyToUndefined(value) {
-  if (typeof value !== "string")
-    return void 0;
+  if (typeof value !== "string") return void 0;
   const trimmed = value.trim();
   return trimmed.length > 0 ? trimmed : void 0;
 }
@@ -159,10 +155,26 @@ ${logger.dump()}`, 15e3);
 }
 function safeStringify(value) {
   try {
-    return JSON.stringify(value, null, 2);
+    return JSON.stringify(redactSecrets(value), null, 2);
   } catch (_error) {
-    return String(value);
+    return redactSecretText(String(value));
   }
+}
+function redactSecrets(value) {
+  if (typeof value === "string") return redactSecretText(value);
+  if (!value || typeof value !== "object") return value;
+  if (Array.isArray(value)) return value.map(redactSecrets);
+  const output = {};
+  Object.entries(value).forEach(([key, item]) => {
+    output[key] = isSecretKey(key) ? "[REDACTED]" : redactSecrets(item);
+  });
+  return output;
+}
+function isSecretKey(key) {
+  return /authorization|password|secret|token|signature|accesskeyid|ossaccesskeyid/i.test(key);
+}
+function redactSecretText(value) {
+  return value.replace(/(Authorization:\s*)[^\n]+/gi, "$1[REDACTED]").replace(/(OSSAccessKeyId=)[^&\s]+/gi, "$1[REDACTED]").replace(/(Signature=)[^&\s]+/gi, "$1[REDACTED]").replace(/(AccessKeyId>)[^<]+/gi, "$1[REDACTED]").replace(/(SignatureProvided>)[^<]+/gi, "$1[REDACTED]");
 }
 
 // src/publisher.ts
@@ -196,12 +208,10 @@ var EndpointSwitchModal = class extends import_obsidian2.Modal {
   }
   onClose() {
     this.contentEl.empty();
-    if (!this.resolved)
-      this.finish(false);
+    if (!this.resolved) this.finish(false);
   }
   finish(value) {
-    if (this.resolved)
-      return;
+    if (this.resolved) return;
     this.resolved = true;
     this.resolve(value);
     this.close();
@@ -224,14 +234,12 @@ var BrowserImageCompressor = class {
       canvas.width = bitmap.width;
       canvas.height = bitmap.height;
       const context = canvas.getContext("2d");
-      if (!context)
-        return this.original(file, body, mimeType, "Canvas 2D context is unavailable");
+      if (!context) return this.original(file, body, mimeType, "Canvas 2D context is unavailable");
       context.drawImage(bitmap, 0, 0);
       (_a = bitmap.close) == null ? void 0 : _a.call(bitmap);
       const targetMimeType = mimeType === "image/png" && hasAlpha(context, canvas.width, canvas.height) ? "image/png" : mimeType === "image/webp" ? "image/webp" : "image/jpeg";
       const blob = await canvasToBlob(canvas, targetMimeType, clampQuality(quality));
-      if (!blob)
-        return this.original(file, body, mimeType, "Canvas compression produced no output");
+      if (!blob) return this.original(file, body, mimeType, "Canvas compression produced no output");
       const compressedBody = await blob.arrayBuffer();
       if (compressedBody.byteLength >= body.byteLength) {
         return this.original(file, body, mimeType, "Compressed image is not smaller than original");
@@ -274,8 +282,7 @@ function isCompressibleMimeType(mimeType) {
 function hasAlpha(context, width, height) {
   const data = context.getImageData(0, 0, width, height).data;
   for (let index = 3; index < data.length; index += 4) {
-    if (data[index] < 255)
-      return true;
+    if (data[index] < 255) return true;
   }
   return false;
 }
@@ -283,15 +290,12 @@ function canvasToBlob(canvas, mimeType, quality) {
   return new Promise((resolve) => canvas.toBlob(resolve, mimeType, quality));
 }
 function clampQuality(value) {
-  if (Number.isNaN(value))
-    return 0.82;
+  if (Number.isNaN(value)) return 0.82;
   return Math.min(1, Math.max(0.1, value));
 }
 function extensionForMimeType(mimeType) {
-  if (mimeType === "image/webp")
-    return "webp";
-  if (mimeType === "image/png")
-    return "png";
+  if (mimeType === "image/webp") return "webp";
+  if (mimeType === "image/png") return "png";
   return "jpg";
 }
 function replaceExtension(fileName, extension) {
@@ -336,10 +340,8 @@ var HttpMediaUrlChecker = class {
   }
 };
 function classifyStatus(status) {
-  if (status >= 200 && status < 400 || status === 206)
-    return "available";
-  if (status === 404 || status === 410)
-    return "missing";
+  if (status >= 200 && status < 400 || status === 206) return "available";
+  if (status === 404 || status === 410) return "missing";
   return "unknown";
 }
 function serializeError2(error) {
@@ -434,24 +436,17 @@ var AliyunOssStorageProvider = class {
   }
   assertReady() {
     const missing = [];
-    if (!this.settings.endpoint)
-      missing.push("OSS endpoint");
-    if (!this.settings.bucket)
-      missing.push("OSS bucket");
-    if (!this.settings.accessKeyId)
-      missing.push("AccessKey ID");
-    if (!this.settings.accessKeySecret)
-      missing.push("AccessKey Secret");
-    if (!this.settings.publicBaseUrl)
-      missing.push("Public base URL");
-    if (missing.length > 0)
-      throw new Error(`Aliyun OSS settings incomplete: ${missing.join(", ")}.`);
+    if (!this.settings.endpoint) missing.push("OSS endpoint");
+    if (!this.settings.bucket) missing.push("OSS bucket");
+    if (!this.settings.accessKeyId) missing.push("AccessKey ID");
+    if (!this.settings.accessKeySecret) missing.push("AccessKey Secret");
+    if (!this.settings.publicBaseUrl) missing.push("Public base URL");
+    if (missing.length > 0) throw new Error(`Aliyun OSS settings incomplete: ${missing.join(", ")}.`);
   }
   uploadBaseUrl() {
     const endpoint = trimTrailingSlash(this.settings.endpoint);
     const host = endpoint.replace(/^https?:\/\//, "");
-    if (host.startsWith(`${this.settings.bucket}.`))
-      return endpoint;
+    if (host.startsWith(`${this.settings.bucket}.`)) return endpoint;
     const protocol = endpoint.startsWith("http://") ? "http://" : "https://";
     return `${protocol}${this.settings.bucket}.${host}`;
   }
@@ -478,8 +473,7 @@ ${canonicalizedResource}`;
 function arrayBufferToBase64(buffer) {
   let binary = "";
   const bytes = new Uint8Array(buffer);
-  for (const byte of bytes)
-    binary += String.fromCharCode(byte);
+  for (const byte of bytes) binary += String.fromCharCode(byte);
   return btoa(binary);
 }
 function trimTrailingSlash(value) {
@@ -655,22 +649,18 @@ var LargeImageUploadModal = class extends import_obsidian5.Modal {
   }
   onClose() {
     this.contentEl.empty();
-    if (!this.resolved)
-      this.finish(false);
+    if (!this.resolved) this.finish(false);
   }
   finish(value) {
-    if (this.resolved)
-      return;
+    if (this.resolved) return;
     this.resolved = true;
     this.resolve(value);
     this.close();
   }
 };
 function formatBytes(bytes) {
-  if (bytes < 1024)
-    return `${bytes} B`;
-  if (bytes < 1024 * 1024)
-    return `${(bytes / 1024).toFixed(1)} KB`;
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   return `${(bytes / 1024 / 1024).toFixed(2)} MB`;
 }
 
@@ -721,8 +711,7 @@ var WordPressImageAssetProcessor = class {
       /!\[([^\]]*)\]\(([^)]+)\)/g,
       async (_match, rawAlt, rawTarget) => {
         const parsed = parseMarkdownImageTarget(rawTarget);
-        if (!parsed || isRemoteOrDataUrl(parsed.path))
-          return _match;
+        if (!parsed || isRemoteOrDataUrl(parsed.path)) return _match;
         const file = this.resolveLocalImage(parsed.path, sourcePath);
         if (!file) {
           this.logger.warn("Could not resolve Markdown image", { target: parsed.path, sourcePath });
@@ -736,8 +725,7 @@ var WordPressImageAssetProcessor = class {
   resolveLocalImage(target, sourcePath) {
     const decodedTarget = safeDecodeUri(stripAngleBrackets(target.trim()));
     const file = this.app.metadataCache.getFirstLinkpathDest(decodedTarget, sourcePath);
-    if (!file || !isImageExtension(file.extension))
-      return null;
+    if (!file || !isImageExtension(file.extension)) return null;
     return file;
   }
   async uploadImage(file, alt) {
@@ -835,11 +823,9 @@ var WordPressImageAssetProcessor = class {
     try {
       return await this.storageProvider.uploadImage(uploadInput);
     } catch (error) {
-      if (!(error instanceof AliyunOssEndpointMismatchError))
-        throw error;
+      if (!(error instanceof AliyunOssEndpointMismatchError)) throw error;
       const shouldSwitch = await confirmEndpointSwitch(this.app, error.currentEndpoint, error.recommendedEndpoint);
-      if (!shouldSwitch)
-        throw error;
+      if (!shouldSwitch) throw error;
       this.settings.aliyunOss.endpoint = error.recommendedEndpoint;
       await this.persistSettings();
       this.storageProvider = createImageStorageProvider(this.settings, this.client, this.logger);
@@ -851,20 +837,13 @@ var WordPressImageAssetProcessor = class {
   }
   getValidPersistentCache(file) {
     const entry = this.settings.mediaCache[file.path];
-    if (!entry)
-      return void 0;
-    if (entry.vaultPath !== file.path)
-      return void 0;
-    if (entry.size !== file.stat.size)
-      return void 0;
-    if (entry.mtime !== file.stat.mtime)
-      return void 0;
-    if (entry.compressionQuality !== this.settings.imageCompressionQuality)
-      return void 0;
-    if (entry.provider !== this.settings.imageStorageProvider)
-      return void 0;
-    if (!entry.url)
-      return void 0;
+    if (!entry) return void 0;
+    if (entry.vaultPath !== file.path) return void 0;
+    if (entry.size !== file.stat.size) return void 0;
+    if (entry.mtime !== file.stat.mtime) return void 0;
+    if (entry.compressionQuality !== this.settings.imageCompressionQuality) return void 0;
+    if (entry.provider !== this.settings.imageStorageProvider) return void 0;
+    if (!entry.url) return void 0;
     return entry;
   }
   async writePersistentCache(file, entry) {
@@ -893,8 +872,7 @@ function splitByFencedCodeBlocks(markdown) {
 async function replaceAsync(value, regex, replacer) {
   var _a;
   const matches = Array.from(value.matchAll(regex));
-  if (matches.length === 0)
-    return value;
+  if (matches.length === 0) return value;
   let output = "";
   let lastIndex = 0;
   for (const match of matches) {
@@ -913,8 +891,7 @@ function isAdmonitionFence(fence) {
 }
 function parseMarkdownImageTarget(rawTarget) {
   const target = rawTarget.trim();
-  if (!target)
-    return null;
+  if (!target) return null;
   const angleMatch = target.match(/^<([^>]+)>(.*)$/);
   if (angleMatch) {
     const title = angleMatch[2].trim();
@@ -928,10 +905,8 @@ function parseMarkdownImageTarget(rawTarget) {
 }
 function normalizeAlt(rawAlias, file) {
   const alias = rawAlias == null ? void 0 : rawAlias.trim();
-  if (!alias)
-    return file.basename;
-  if (/^\d+(x\d+)?$/.test(alias))
-    return file.basename;
+  if (!alias) return file.basename;
+  if (/^\d+(x\d+)?$/.test(alias)) return file.basename;
   return alias;
 }
 function isRemoteOrDataUrl(value) {
@@ -1001,14 +976,11 @@ var ObsidianSpecialFormatTransformer = class {
   processFence(fence) {
     var _a;
     const match = fence.match(/^(```|~~~)([^\n]*)\n([\s\S]*?)\n\1[ \t]*$/);
-    if (!match)
-      return fence;
+    if (!match) return fence;
     const language = (_a = match[2].trim().split(/\s+/)[0]) == null ? void 0 : _a.toLowerCase();
     const body = match[3];
-    if (language === "mermaid")
-      return fence;
-    if (language === "flowchart" || language === "flow")
-      return this.createPlaceholder("flowchart", body);
+    if (language === "mermaid") return fence;
+    if (language === "flowchart" || language === "flow") return this.createPlaceholder("flowchart", body);
     return fence;
   }
   processMarkdownText(text) {
@@ -1257,12 +1229,10 @@ function normalizeAdmonitionCallouts(html) {
 }
 function getCalloutType(callout) {
   const dataCallout = callout.getAttribute("data-callout");
-  if (dataCallout)
-    return sanitizeClassName(dataCallout);
+  if (dataCallout) return sanitizeClassName(dataCallout);
   for (const className of Array.from(callout.classList)) {
     const match = className.match(/^admonition-(.+)$/);
-    if (match)
-      return sanitizeClassName(match[1]);
+    if (match) return sanitizeClassName(match[1]);
   }
   return "note";
 }
@@ -1398,8 +1368,7 @@ var MetadataModal = class extends import_obsidian7.Modal {
     contentEl.createEl("p", {
       text: this.categoryActions ? "Select WordPress categories. You can add or delete categories directly here." : "WordPress categories could not be loaded; publish will continue without categories."
     });
-    if (!this.categoryActions)
-      return;
+    if (!this.categoryActions) return;
     new import_obsidian7.Setting(contentEl).setName("Add category").addText((text) => text.setPlaceholder("New category name").setValue(this.newCategoryName).onChange((value) => {
       this.newCategoryName = value;
     })).addDropdown((dropdown) => {
@@ -1414,8 +1383,7 @@ var MetadataModal = class extends import_obsidian7.Modal {
     }).addButton((button) => button.setButtonText("Add").onClick(async () => {
       var _a;
       const name = this.newCategoryName.trim();
-      if (!name)
-        return;
+      if (!name) return;
       const created = await ((_a = this.categoryActions) == null ? void 0 : _a.create(name, this.newCategoryParentId || void 0));
       if (created) {
         this.selectedCategoryNames.add(created.name);
@@ -1434,10 +1402,8 @@ var MetadataModal = class extends import_obsidian7.Modal {
     }
     flattenCategoryTree(this.categories).forEach(({ category, depth }) => {
       new import_obsidian7.Setting(contentEl).setName(`${"  ".repeat(depth)}${depth > 0 ? "- " : ""}${category.name}`).setDesc(`slug: ${category.slug}`).addToggle((toggle) => toggle.setValue(this.selectedCategoryNames.has(category.name)).onChange((value) => {
-        if (value)
-          this.selectedCategoryNames.add(category.name);
-        else
-          this.selectedCategoryNames.delete(category.name);
+        if (value) this.selectedCategoryNames.add(category.name);
+        else this.selectedCategoryNames.delete(category.name);
       })).addButton((button) => button.setWarning().setButtonText("Delete").onClick(async () => {
         await this.categoryActions.delete(category.id);
         this.selectedCategoryNames.delete(category.name);
@@ -1466,8 +1432,7 @@ function flattenCategoryTree(categories) {
   const visit = (parent, depth) => {
     var _a;
     for (const category of (_a = byParent.get(parent)) != null ? _a : []) {
-      if (visited.has(category.id))
-        continue;
+      if (visited.has(category.id)) continue;
       visited.add(category.id);
       output.push({ category, depth });
       visit(category.id, depth + 1);
@@ -1475,8 +1440,7 @@ function flattenCategoryTree(categories) {
   };
   visit(0, 0);
   categories.forEach((category) => {
-    if (!visited.has(category.id))
-      output.push({ category, depth: 0 });
+    if (!visited.has(category.id)) output.push({ category, depth: 0 });
   });
   return output;
 }
@@ -1533,12 +1497,10 @@ var RemoteConflictModal = class extends import_obsidian8.Modal {
   }
   onClose() {
     this.contentEl.empty();
-    if (!this.resolved)
-      this.finish("cancel");
+    if (!this.resolved) this.finish("cancel");
   }
   finish(value) {
-    if (this.resolved)
-      return;
+    if (this.resolved) return;
     this.resolved = true;
     this.resolve(value);
     this.close();
@@ -1561,12 +1523,10 @@ var RemoteDeleteModal = class extends import_obsidian8.Modal {
   }
   onClose() {
     this.contentEl.empty();
-    if (!this.resolved)
-      this.finish("cancel");
+    if (!this.resolved) this.finish("cancel");
   }
   finish(value) {
-    if (this.resolved)
-      return;
+    if (this.resolved) return;
     this.resolved = true;
     this.resolve(value);
     this.close();
@@ -1579,8 +1539,7 @@ function renderPostSummary(container, remote, localUpdatedAt) {
   addRow(list, "URL", remote.link);
   addRow(list, "Published", remote.date);
   addRow(list, "Remote modified", remote.modified);
-  if (localUpdatedAt)
-    addRow(list, "Local last publish", localUpdatedAt);
+  if (localUpdatedAt) addRow(list, "Local last publish", localUpdatedAt);
 }
 function addRow(list, label, value) {
   list.createEl("dt", { text: label });
@@ -1686,6 +1645,7 @@ var WordPressClient = class {
       url,
       method,
       status: response.status,
+      headers,
       body: (_a = response.json) != null ? _a : response.text
     });
     if (response.status < 200 || response.status >= 300) {
@@ -1805,12 +1765,10 @@ var PublishService = class {
     this.logger.info("Publish completed", response);
   }
   async ensureRemoteCanBeOverwritten(client, postId, localUpdatedAt) {
-    if (!postId || !localUpdatedAt)
-      return;
+    if (!postId || !localUpdatedAt) return;
     const remote = await client.getPost(postId);
     this.logger.info("Checked remote post before overwrite", { postId, localUpdatedAt, remoteModified: remote.modified });
-    if (sameTimestamp(remote.modified, localUpdatedAt))
-      return;
+    if (sameTimestamp(remote.modified, localUpdatedAt)) return;
     const decision = await confirmRemoteOverwrite(this.app, remote, localUpdatedAt);
     if (decision !== "overwrite") {
       throw new Error("Publish canceled because the remote WordPress post has changed.");
@@ -1818,12 +1776,9 @@ var PublishService = class {
   }
   assertSettingsReady() {
     const missing = [];
-    if (!this.settings.siteUrl)
-      missing.push("site URL");
-    if (!this.settings.username)
-      missing.push("username");
-    if (!this.settings.applicationPassword)
-      missing.push("application password");
+    if (!this.settings.siteUrl) missing.push("site URL");
+    if (!this.settings.username) missing.push("username");
+    if (!this.settings.applicationPassword) missing.push("application password");
     if (missing.length > 0) {
       throw new Error(`WordPress settings incomplete: ${missing.join(", ")}.`);
     }
@@ -1884,10 +1839,8 @@ var RemotePostService = class {
   }
   getActiveMappedPost() {
     const file = this.app.workspace.getActiveFile();
-    if (!file)
-      throw new Error("No active note. Open a published Markdown note first.");
-    if (file.extension !== "md")
-      throw new Error("The active file is not a Markdown note.");
+    if (!file) throw new Error("No active note. Open a published Markdown note first.");
+    if (file.extension !== "md") throw new Error("The active file is not a Markdown note.");
     const metadata = this.frontmatter.read(file);
     if (!metadata.wp_post_id) {
       throw new Error("This note does not have wp_post_id in frontmatter. Publish it before using remote post actions.");
@@ -1896,12 +1849,90 @@ var RemotePostService = class {
   }
 };
 
+// src/secret-store.ts
+var ElectronSafeStorageSecretStore = class {
+  constructor(data, logger) {
+    this.data = data;
+    this.logger = logger;
+    this.backend = "unavailable";
+    this.available = false;
+    this.secure = false;
+    var _a, _b, _c, _d;
+    this.safeStorage = loadSafeStorage(logger);
+    this.available = Boolean((_a = this.safeStorage) == null ? void 0 : _a.isEncryptionAvailable());
+    this.backend = (_d = (_c = (_b = this.safeStorage) == null ? void 0 : _b.getSelectedStorageBackend) == null ? void 0 : _c.call(_b)) != null ? _d : this.available ? "os_crypt" : "unavailable";
+    this.secure = this.available && this.backend !== "basic_text";
+  }
+  status() {
+    return {
+      available: this.available,
+      secure: this.secure,
+      backend: this.backend,
+      warning: this.warning()
+    };
+  }
+  async get(key) {
+    const encrypted = this.data[key];
+    if (!encrypted || !this.safeStorage || !this.available) return void 0;
+    try {
+      return this.safeStorage.decryptString(base64ToBuffer(encrypted));
+    } catch (error) {
+      this.logger.warn("Failed to decrypt secret", { key, error: serializeError4(error) });
+      return void 0;
+    }
+  }
+  async set(key, value) {
+    if (!this.safeStorage || !this.available) {
+      throw new Error("Secure secret storage is unavailable on this system.");
+    }
+    const encrypted = this.safeStorage.encryptString(value);
+    this.data[key] = bufferToBase64(encrypted);
+  }
+  async delete(key) {
+    delete this.data[key];
+  }
+  warning() {
+    if (!this.available) return "Electron safeStorage encryption is unavailable. Sensitive settings cannot be saved securely.";
+    if (this.backend === "basic_text") return "Electron safeStorage is using Linux basic_text backend. This is weak protection and should not be used for long-lived secrets.";
+    return void 0;
+  }
+};
+function loadSafeStorage(logger) {
+  var _a, _b;
+  try {
+    if (typeof require !== "function") return void 0;
+    const electron = require("electron");
+    return (_b = electron.safeStorage) != null ? _b : (_a = electron.remote) == null ? void 0 : _a.safeStorage;
+  } catch (error) {
+    logger.warn("Could not load Electron safeStorage", serializeError4(error));
+    return void 0;
+  }
+}
+function bufferToBase64(buffer) {
+  let binary = "";
+  for (const byte of buffer) binary += String.fromCharCode(byte);
+  return btoa(binary);
+}
+function base64ToBuffer(value) {
+  const binary = atob(value);
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) {
+    bytes[index] = binary.charCodeAt(index);
+  }
+  return bytes;
+}
+function serializeError4(error) {
+  if (error instanceof Error) return { name: error.name, message: error.message, stack: error.stack };
+  return error;
+}
+
 // src/settings.ts
 var import_obsidian12 = require("obsidian");
 var DEFAULT_SETTINGS = {
   siteUrl: "",
   username: "",
   applicationPassword: "",
+  applicationPasswordSaved: false,
   defaultStatus: "draft",
   debug: false,
   imageCompressionQuality: 0.82,
@@ -1912,10 +1943,12 @@ var DEFAULT_SETTINGS = {
     bucket: "",
     accessKeyId: "",
     accessKeySecret: "",
+    accessKeySecretSaved: false,
     publicBaseUrl: "",
     objectKeyRule: "obsidian/{yyyy}/{mm}/{postTitle}/{hash}-{fileName}",
     testReferer: ""
   },
+  encryptedSecrets: {},
   mediaCache: {}
 };
 var WordPressSettingTab = class extends import_obsidian12.PluginSettingTab {
@@ -1925,8 +1958,15 @@ var WordPressSettingTab = class extends import_obsidian12.PluginSettingTab {
   }
   display() {
     const { containerEl } = this;
+    let applicationPasswordInput = "";
     containerEl.empty();
     containerEl.createEl("h2", { text: "Obsidian to WordPress" });
+    const secretStatus = this.plugin.settings.secretStoreStatus;
+    if (secretStatus) {
+      containerEl.createEl("p", {
+        text: secretStatus.warning ? `Secret storage warning: ${secretStatus.warning}` : `Secret storage: ${secretStatus.backend} (${secretStatus.secure ? "secure" : "not secure"})`
+      });
+    }
     new import_obsidian12.Setting(containerEl).setName("WordPress site URL").setDesc("Self-hosted WordPress base URL, for example https://example.com").addText((text) => text.setPlaceholder("https://example.com").setValue(this.plugin.settings.siteUrl).onChange(async (value) => {
       this.plugin.settings.siteUrl = value.trim();
       await this.plugin.saveSettings();
@@ -1935,13 +1975,18 @@ var WordPressSettingTab = class extends import_obsidian12.PluginSettingTab {
       this.plugin.settings.username = value.trim();
       await this.plugin.saveSettings();
     }));
-    new import_obsidian12.Setting(containerEl).setName("Application Password").setDesc("WordPress Application Password. Stored in Obsidian plugin data for this demo.").addText((text) => {
+    new import_obsidian12.Setting(containerEl).setName("Application Password").setDesc(this.plugin.settings.applicationPasswordSaved ? "Saved encrypted with Electron safeStorage. Enter a new value to replace it." : "WordPress Application Password. Saved encrypted with Electron safeStorage.").addText((text) => {
       text.inputEl.type = "password";
-      text.setPlaceholder("xxxx xxxx xxxx xxxx xxxx xxxx").setValue(this.plugin.settings.applicationPassword).onChange(async (value) => {
-        this.plugin.settings.applicationPassword = value;
-        await this.plugin.saveSettings();
+      text.setPlaceholder("xxxx xxxx xxxx xxxx xxxx xxxx").onChange(async (value) => {
+        applicationPasswordInput = value;
       });
-    });
+    }).addButton((button) => button.setCta().setButtonText("Save").onClick(async () => {
+      await this.plugin.setSecret("wordpress.applicationPassword", applicationPasswordInput);
+      this.display();
+    })).addButton((button) => button.setButtonText("Clear").onClick(async () => {
+      await this.plugin.deleteSecret("wordpress.applicationPassword");
+      this.display();
+    }));
     new import_obsidian12.Setting(containerEl).setName("Default post status").setDesc("Used when a note does not already contain WordPress frontmatter.").addDropdown((dropdown) => dropdown.addOption("draft", "Draft").addOption("publish", "Publish").addOption("private", "Private").addOption("pending", "Pending").setValue(this.plugin.settings.defaultStatus).onChange(async (value) => {
       this.plugin.settings.defaultStatus = value;
       await this.plugin.saveSettings();
@@ -1972,6 +2017,7 @@ var WordPressSettingTab = class extends import_obsidian12.PluginSettingTab {
     }));
   }
   displayAliyunOssSettings(containerEl) {
+    let accessKeySecretInput = "";
     containerEl.createEl("h3", { text: "Aliyun OSS" });
     new import_obsidian12.Setting(containerEl).setName("OSS endpoint").setDesc("Example: https://oss-cn-hangzhou.aliyuncs.com or https://bucket.oss-cn-hangzhou.aliyuncs.com").addText((text) => text.setPlaceholder("https://oss-cn-hangzhou.aliyuncs.com").setValue(this.plugin.settings.aliyunOss.endpoint).onChange(async (value) => {
       this.plugin.settings.aliyunOss.endpoint = value.trim();
@@ -1985,13 +2031,18 @@ var WordPressSettingTab = class extends import_obsidian12.PluginSettingTab {
       this.plugin.settings.aliyunOss.accessKeyId = value.trim();
       await this.plugin.saveSettings();
     }));
-    new import_obsidian12.Setting(containerEl).setName("AccessKey Secret").setDesc("Stored in Obsidian plugin data for this direct-upload demo.").addText((text) => {
+    new import_obsidian12.Setting(containerEl).setName("AccessKey Secret").setDesc(this.plugin.settings.aliyunOss.accessKeySecretSaved ? "Saved encrypted with Electron safeStorage. Enter a new value to replace it." : "Aliyun AccessKey Secret. Saved encrypted with Electron safeStorage.").addText((text) => {
       text.inputEl.type = "password";
-      text.setValue(this.plugin.settings.aliyunOss.accessKeySecret).onChange(async (value) => {
-        this.plugin.settings.aliyunOss.accessKeySecret = value;
-        await this.plugin.saveSettings();
+      text.onChange(async (value) => {
+        accessKeySecretInput = value;
       });
-    });
+    }).addButton((button) => button.setCta().setButtonText("Save").onClick(async () => {
+      await this.plugin.setSecret("aliyun.accessKeySecret", accessKeySecretInput);
+      this.display();
+    })).addButton((button) => button.setButtonText("Clear").onClick(async () => {
+      await this.plugin.deleteSecret("aliyun.accessKeySecret");
+      this.display();
+    }));
     new import_obsidian12.Setting(containerEl).setName("Public base URL").setDesc("The URL prefix inserted into posts. Usually your CDN domain or OSS public endpoint, for example https://img.example.com").addText((text) => text.setPlaceholder("https://img.example.com").setValue(this.plugin.settings.aliyunOss.publicBaseUrl).onChange(async (value) => {
       this.plugin.settings.aliyunOss.publicBaseUrl = value.trim();
       await this.plugin.saveSettings();
@@ -2011,12 +2062,13 @@ var WordPressSettingTab = class extends import_obsidian12.PluginSettingTab {
   async runOssUploadTest() {
     const logger = new PublishLogger();
     try {
-      const provider = createImageStorageProvider(this.plugin.settings, void 0, logger);
-      const result = await provider.uploadImage(createTestImageUploadInput(this.plugin.settings.aliyunOss.objectKeyRule));
+      const settings = await this.plugin.settingsWithSecrets();
+      const provider = createImageStorageProvider(settings, void 0, logger);
+      const result = await provider.uploadImage(createTestImageUploadInput(settings.aliyunOss.objectKeyRule));
       logger.info("OSS test upload completed", result);
       const checker = new HttpMediaUrlChecker(logger);
-      const status = await checker.check(result.url, this.plugin.settings.aliyunOss.testReferer || void 0);
-      logger.info("OSS test URL check completed", { url: result.url, status, referer: this.plugin.settings.aliyunOss.testReferer });
+      const status = await checker.check(result.url, settings.aliyunOss.testReferer || void 0);
+      logger.info("OSS test URL check completed", { url: result.url, status, referer: settings.aliyunOss.testReferer });
       new import_obsidian12.Notice(`OSS test upload ${status === "missing" ? "uploaded but URL is not accessible" : "completed"}: ${result.url}`, 12e3);
       if (this.plugin.settings.debug || status !== "available") {
         showLogNotice("OSS test upload log", logger);
@@ -2072,12 +2124,10 @@ var PostStatusModal = class extends import_obsidian13.Modal {
   }
   onClose() {
     this.contentEl.empty();
-    if (!this.resolved)
-      this.finish(void 0);
+    if (!this.resolved) this.finish(void 0);
   }
   finish(status) {
-    if (this.resolved)
-      return;
+    if (this.resolved) return;
     this.resolved = true;
     this.resolve(status);
     this.close();
@@ -2131,31 +2181,85 @@ var WordPressPublisherPlugin = class extends import_obsidian14.Plugin {
     });
   }
   async loadSettings() {
-    var _a, _b, _c;
+    var _a, _b, _c, _d;
     this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
     this.settings.imageCompressionQuality = normalizeNumber(this.settings.imageCompressionQuality, 0.82, 0.1, 1);
     this.settings.largeImageThresholdMb = normalizeNumber(this.settings.largeImageThresholdMb, 2, 0, Number.MAX_SAFE_INTEGER);
     this.settings.mediaCache = (_a = this.settings.mediaCache) != null ? _a : {};
     this.settings.imageStorageProvider = (_b = this.settings.imageStorageProvider) != null ? _b : "wordpress";
     this.settings.aliyunOss = Object.assign({}, DEFAULT_SETTINGS.aliyunOss, (_c = this.settings.aliyunOss) != null ? _c : {});
+    this.settings.encryptedSecrets = (_d = this.settings.encryptedSecrets) != null ? _d : {};
+    this.secretStore = new ElectronSafeStorageSecretStore(this.settings.encryptedSecrets, this.logger);
+    this.settings.secretStoreStatus = this.secretStore.status();
+    await this.migratePlaintextSecrets();
   }
   async saveSettings() {
     await this.saveData(this.settings);
+  }
+  async setSecret(key, value) {
+    var _a;
+    if (!this.secretStore.status().secure) {
+      throw new Error((_a = this.secretStore.status().warning) != null ? _a : "Secure secret storage is unavailable.");
+    }
+    if (!value) {
+      await this.secretStore.delete(key);
+    } else {
+      await this.secretStore.set(key, value);
+    }
+    this.markSecretSaved(key, Boolean(value));
+    await this.saveSettings();
+  }
+  async deleteSecret(key) {
+    await this.secretStore.delete(key);
+    this.markSecretSaved(key, false);
+    await this.saveSettings();
+  }
+  async settingsWithSecrets() {
+    var _a, _b;
+    const settings = structuredClone(this.settings);
+    settings.applicationPassword = (_a = await this.secretStore.get("wordpress.applicationPassword")) != null ? _a : "";
+    settings.aliyunOss.accessKeySecret = (_b = await this.secretStore.get("aliyun.accessKeySecret")) != null ? _b : "";
+    return settings;
+  }
+  async migratePlaintextSecrets() {
+    let changed = false;
+    if (this.settings.applicationPassword) {
+      if (this.secretStore.status().secure) {
+        await this.secretStore.set("wordpress.applicationPassword", this.settings.applicationPassword);
+        this.settings.applicationPassword = "";
+        this.settings.applicationPasswordSaved = true;
+        changed = true;
+      } else {
+        this.logger.warn("Plaintext WordPress Application Password was found but could not be migrated because secure storage is unavailable.");
+      }
+    }
+    if (this.settings.aliyunOss.accessKeySecret) {
+      if (this.secretStore.status().secure) {
+        await this.secretStore.set("aliyun.accessKeySecret", this.settings.aliyunOss.accessKeySecret);
+        this.settings.aliyunOss.accessKeySecret = "";
+        this.settings.aliyunOss.accessKeySecretSaved = true;
+        changed = true;
+      } else {
+        this.logger.warn("Plaintext Aliyun OSS AccessKey Secret was found but could not be migrated because secure storage is unavailable.");
+      }
+    }
+    if (changed) await this.saveSettings();
+  }
+  markSecretSaved(key, saved) {
+    if (key === "wordpress.applicationPassword") this.settings.applicationPasswordSaved = saved;
+    if (key === "aliyun.accessKeySecret") this.settings.aliyunOss.accessKeySecretSaved = saved;
   }
   async changeCurrentNotePostStatus() {
     var _a;
     try {
       const file = this.app.workspace.getActiveFile();
-      if (!file)
-        throw new Error("No active note. Open a Markdown note first.");
-      if (file.extension !== "md")
-        throw new Error("The active file is not a Markdown note.");
+      if (!file) throw new Error("No active note. Open a Markdown note first.");
+      if (file.extension !== "md") throw new Error("The active file is not a Markdown note.");
       const frontmatter = new FrontmatterService(this.app);
       const metadata = frontmatter.read(file);
       const currentStatus = (_a = metadata.wp_status) != null ? _a : this.settings.defaultStatus;
       const nextStatus = await choosePostStatus(this.app, currentStatus);
-      if (!nextStatus)
-        return;
+      if (!nextStatus) return;
       await frontmatter.writePostStatus(file, nextStatus);
       new import_obsidian14.Notice(`WordPress post status set to: ${nextStatus}`, 6e3);
     } catch (error) {
@@ -2164,41 +2268,46 @@ var WordPressPublisherPlugin = class extends import_obsidian14.Plugin {
   }
   async runRemoteAction(name, action) {
     this.logger.clear();
-    const service = new RemotePostService(this.app, this.settings, this.logger);
+    const settings = await this.settingsWithSecrets();
+    const service = new RemotePostService(this.app, settings, this.logger);
     try {
       await action(service);
       if (this.settings.debug) {
         showLogNotice(`${name} debug log`, this.logger);
       }
     } catch (error) {
-      this.logger.error(`${name} failed`, serializeError4(error));
+      this.logger.error(`${name} failed`, serializeError5(error));
       new import_obsidian14.Notice(error instanceof Error ? error.message : `${name} failed`, 1e4);
       showLogNotice(`${name} failed`, this.logger);
     }
   }
   async publishCurrentNote() {
     this.logger.clear();
-    const service = new PublishService(this.app, this.settings, this.logger, () => this.saveSettings());
+    const settings = await this.settingsWithSecrets();
+    const service = new PublishService(this.app, settings, this.logger, async () => {
+      this.settings.mediaCache = settings.mediaCache;
+      this.settings.aliyunOss.endpoint = settings.aliyunOss.endpoint;
+      await this.saveSettings();
+    });
     try {
       await service.publishCurrentNote();
       if (this.settings.debug) {
         showLogNotice("WordPress publish debug log", this.logger);
       }
     } catch (error) {
-      this.logger.error("Publish command failed", serializeError4(error));
+      this.logger.error("Publish command failed", serializeError5(error));
       new import_obsidian14.Notice(error instanceof Error ? error.message : "Publish failed", 1e4);
       showLogNotice("WordPress publish failed", this.logger);
     }
   }
 };
-function serializeError4(error) {
+function serializeError5(error) {
   if (error instanceof Error) {
     return { name: error.name, message: error.message, stack: error.stack };
   }
   return error;
 }
 function normalizeNumber(value, fallback, min, max) {
-  if (typeof value !== "number" || Number.isNaN(value))
-    return fallback;
+  if (typeof value !== "number" || Number.isNaN(value)) return fallback;
   return Math.min(max, Math.max(min, value));
 }

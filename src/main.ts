@@ -3,6 +3,7 @@ import { FrontmatterService } from "./frontmatter";
 import { showLogNotice, PublishLogger } from "./logger";
 import { PublishService } from "./publisher";
 import { RemotePostService } from "./remote-post-service";
+import { ElectronSafeStorageSecretStore, type SecretStore } from "./secret-store";
 import { DEFAULT_SETTINGS, WordPressSettingTab } from "./settings";
 import { choosePostStatus } from "./status-modal";
 import type { WordPressPluginSettings } from "./types";
@@ -10,6 +11,7 @@ import type { WordPressPluginSettings } from "./types";
 export default class WordPressPublisherPlugin extends Plugin {
   settings: WordPressPluginSettings = DEFAULT_SETTINGS;
   private logger = new PublishLogger();
+  secretStore!: SecretStore;
 
   async onload(): Promise<void> {
     await this.loadSettings();
@@ -63,10 +65,70 @@ export default class WordPressPublisherPlugin extends Plugin {
     this.settings.mediaCache = this.settings.mediaCache ?? {};
     this.settings.imageStorageProvider = this.settings.imageStorageProvider ?? "wordpress";
     this.settings.aliyunOss = Object.assign({}, DEFAULT_SETTINGS.aliyunOss, this.settings.aliyunOss ?? {});
+    this.settings.encryptedSecrets = this.settings.encryptedSecrets ?? {};
+    this.secretStore = new ElectronSafeStorageSecretStore(this.settings.encryptedSecrets, this.logger);
+    this.settings.secretStoreStatus = this.secretStore.status();
+    await this.migratePlaintextSecrets();
   }
 
   async saveSettings(): Promise<void> {
     await this.saveData(this.settings);
+  }
+
+  async setSecret(key: "wordpress.applicationPassword" | "aliyun.accessKeySecret", value: string): Promise<void> {
+    if (!this.secretStore.status().secure) {
+      throw new Error(this.secretStore.status().warning ?? "Secure secret storage is unavailable.");
+    }
+    if (!value) {
+      await this.secretStore.delete(key);
+    } else {
+      await this.secretStore.set(key, value);
+    }
+    this.markSecretSaved(key, Boolean(value));
+    await this.saveSettings();
+  }
+
+  async deleteSecret(key: "wordpress.applicationPassword" | "aliyun.accessKeySecret"): Promise<void> {
+    await this.secretStore.delete(key);
+    this.markSecretSaved(key, false);
+    await this.saveSettings();
+  }
+
+  async settingsWithSecrets(): Promise<WordPressPluginSettings> {
+    const settings = structuredClone(this.settings) as WordPressPluginSettings;
+    settings.applicationPassword = await this.secretStore.get("wordpress.applicationPassword") ?? "";
+    settings.aliyunOss.accessKeySecret = await this.secretStore.get("aliyun.accessKeySecret") ?? "";
+    return settings;
+  }
+
+  private async migratePlaintextSecrets(): Promise<void> {
+    let changed = false;
+    if (this.settings.applicationPassword) {
+      if (this.secretStore.status().secure) {
+        await this.secretStore.set("wordpress.applicationPassword", this.settings.applicationPassword);
+        this.settings.applicationPassword = "";
+        this.settings.applicationPasswordSaved = true;
+        changed = true;
+      } else {
+        this.logger.warn("Plaintext WordPress Application Password was found but could not be migrated because secure storage is unavailable.");
+      }
+    }
+    if (this.settings.aliyunOss.accessKeySecret) {
+      if (this.secretStore.status().secure) {
+        await this.secretStore.set("aliyun.accessKeySecret", this.settings.aliyunOss.accessKeySecret);
+        this.settings.aliyunOss.accessKeySecret = "";
+        this.settings.aliyunOss.accessKeySecretSaved = true;
+        changed = true;
+      } else {
+        this.logger.warn("Plaintext Aliyun OSS AccessKey Secret was found but could not be migrated because secure storage is unavailable.");
+      }
+    }
+    if (changed) await this.saveSettings();
+  }
+
+  private markSecretSaved(key: "wordpress.applicationPassword" | "aliyun.accessKeySecret", saved: boolean): void {
+    if (key === "wordpress.applicationPassword") this.settings.applicationPasswordSaved = saved;
+    if (key === "aliyun.accessKeySecret") this.settings.aliyunOss.accessKeySecretSaved = saved;
   }
 
   private async changeCurrentNotePostStatus(): Promise<void> {
@@ -90,7 +152,8 @@ export default class WordPressPublisherPlugin extends Plugin {
 
   private async runRemoteAction(name: string, action: (service: RemotePostService) => Promise<void>): Promise<void> {
     this.logger.clear();
-    const service = new RemotePostService(this.app, this.settings, this.logger);
+    const settings = await this.settingsWithSecrets();
+    const service = new RemotePostService(this.app, settings, this.logger);
 
     try {
       await action(service);
@@ -106,7 +169,12 @@ export default class WordPressPublisherPlugin extends Plugin {
 
   private async publishCurrentNote(): Promise<void> {
     this.logger.clear();
-    const service = new PublishService(this.app, this.settings, this.logger, () => this.saveSettings());
+    const settings = await this.settingsWithSecrets();
+    const service = new PublishService(this.app, settings, this.logger, async () => {
+      this.settings.mediaCache = settings.mediaCache;
+      this.settings.aliyunOss.endpoint = settings.aliyunOss.endpoint;
+      await this.saveSettings();
+    });
 
     try {
       await service.publishCurrentNote();

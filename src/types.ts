@@ -4,13 +4,23 @@ export interface WordPressPluginSettings {
   siteUrl: string;
   username: string;
   applicationPassword: string;
+  applicationPasswordSaved: boolean;
   defaultStatus: WordPressPostStatus;
   debug: boolean;
   imageCompressionQuality: number;
   largeImageThresholdMb: number;
   imageStorageProvider: ImageStorageProviderId;
   aliyunOss: AliyunOssSettings;
+  encryptedSecrets: Record<string, string>;
+  secretStoreStatus?: SecretStoreStatus;
   mediaCache: Record<string, MediaCacheEntry>;
+}
+
+export interface SecretStoreStatus {
+  available: boolean;
+  secure: boolean;
+  backend: string;
+  warning?: string;
 }
 
 export type ImageStorageProviderId = "wordpress" | "aliyun-oss";
@@ -20,6 +30,7 @@ export interface AliyunOssSettings {
   bucket: string;
   accessKeyId: string;
   accessKeySecret: string;
+  accessKeySecretSaved: boolean;
   publicBaseUrl: string;
   objectKeyRule: string;
   testReferer: string;
@@ -118,3 +129,8 @@ export interface Logger {
   dump(): string;
   clear(): void;
 }
+
+export type RuntimeWordPressPluginSettings = WordPressPluginSettings & {
+  applicationPassword: string;
+  aliyunOss: AliyunOssSettings & { accessKeySecret: string };
+};

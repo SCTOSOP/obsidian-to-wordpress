@@ -45,8 +45,33 @@ export function showLogNotice(title: string, logger: Logger): void {
 
 function safeStringify(value: unknown): string {
   try {
-    return JSON.stringify(value, null, 2);
+    return JSON.stringify(redactSecrets(value), null, 2);
   } catch (_error) {
-    return String(value);
+    return redactSecretText(String(value));
   }
+}
+
+function redactSecrets(value: unknown): unknown {
+  if (typeof value === "string") return redactSecretText(value);
+  if (!value || typeof value !== "object") return value;
+  if (Array.isArray(value)) return value.map(redactSecrets);
+
+  const output: Record<string, unknown> = {};
+  Object.entries(value as Record<string, unknown>).forEach(([key, item]) => {
+    output[key] = isSecretKey(key) ? "[REDACTED]" : redactSecrets(item);
+  });
+  return output;
+}
+
+function isSecretKey(key: string): boolean {
+  return /authorization|password|secret|token|signature|accesskeyid|ossaccesskeyid/i.test(key);
+}
+
+function redactSecretText(value: string): string {
+  return value
+    .replace(/(Authorization:\s*)[^\n]+/gi, "$1[REDACTED]")
+    .replace(/(OSSAccessKeyId=)[^&\s]+/gi, "$1[REDACTED]")
+    .replace(/(Signature=)[^&\s]+/gi, "$1[REDACTED]")
+    .replace(/(AccessKeyId>)[^<]+/gi, "$1[REDACTED]")
+    .replace(/(SignatureProvided>)[^<]+/gi, "$1[REDACTED]");
 }

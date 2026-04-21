@@ -1,6 +1,6 @@
-# Obsidian to WordPress Demo - Interface Documentation
+# Obsidian to WordPress - Interface Documentation
 
-This document defines the extension seams for the minimal demo. The current implementation publishes the active Markdown note to a self-hosted WordPress site through the WordPress REST API and Application Passwords.
+This document defines the extension seams for the plugin. The current implementation publishes the active Markdown note to a self-hosted WordPress site through the WordPress REST API and Application Passwords.
 
 ## Frontmatter Contract
 
@@ -461,9 +461,38 @@ Settings:
 
 - `siteUrl`: self-hosted WordPress base URL.
 - `username`: WordPress username.
-- `applicationPassword`: WordPress Application Password.
+- `applicationPasswordSaved`: whether the WordPress Application Password exists in encrypted secret storage.
 - `defaultStatus`: default status for first publish.
 - `debug`: if true, show full logs after every upload; otherwise show logs only on failure.
+
+### `src/secret-store.ts`
+
+Stores sensitive values through Electron `safeStorage` when available.
+
+Public API:
+
+```ts
+interface SecretStore {
+  status(): SecretStoreStatus
+  get(key: string): Promise<string | undefined>
+  set(key: string, value: string): Promise<void>
+  delete(key: string): Promise<void>
+}
+
+class ElectronSafeStorageSecretStore implements SecretStore
+```
+
+Current behavior:
+
+- Encrypts WordPress Application Password and Aliyun OSS AccessKey Secret into `settings.encryptedSecrets`.
+- Migrates old plaintext secrets on plugin load.
+- Reports safeStorage backend and warning state to the settings UI.
+- Treats Linux `basic_text` as weak protection and displays a warning.
+
+Security boundary:
+
+- Protects secrets at rest in local plugin data.
+- Does not protect against same-user malware, malicious Obsidian plugins, or runtime memory inspection.
 
 ### `src/logger.ts`
 

@@ -11,6 +11,7 @@ export const DEFAULT_SETTINGS: WordPressPluginSettings = {
   siteUrl: "",
   username: "",
   applicationPassword: "",
+  applicationPasswordSaved: false,
   defaultStatus: "draft",
   debug: false,
   imageCompressionQuality: 0.82,
@@ -21,10 +22,12 @@ export const DEFAULT_SETTINGS: WordPressPluginSettings = {
     bucket: "",
     accessKeyId: "",
     accessKeySecret: "",
+    accessKeySecretSaved: false,
     publicBaseUrl: "",
     objectKeyRule: "obsidian/{yyyy}/{mm}/{postTitle}/{hash}-{fileName}",
     testReferer: "",
   },
+  encryptedSecrets: {},
   mediaCache: {},
 };
 
@@ -35,8 +38,18 @@ export class WordPressSettingTab extends PluginSettingTab {
 
   display(): void {
     const { containerEl } = this;
+    let applicationPasswordInput = "";
     containerEl.empty();
     containerEl.createEl("h2", { text: "Obsidian to WordPress" });
+
+    const secretStatus = this.plugin.settings.secretStoreStatus;
+    if (secretStatus) {
+      containerEl.createEl("p", {
+        text: secretStatus.warning
+          ? `Secret storage warning: ${secretStatus.warning}`
+          : `Secret storage: ${secretStatus.backend} (${secretStatus.secure ? "secure" : "not secure"})`,
+      });
+    }
 
     new Setting(containerEl)
       .setName("WordPress site URL")
@@ -62,17 +75,30 @@ export class WordPressSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName("Application Password")
-      .setDesc("WordPress Application Password. Stored in Obsidian plugin data for this demo.")
+      .setDesc(this.plugin.settings.applicationPasswordSaved
+        ? "Saved encrypted with Electron safeStorage. Enter a new value to replace it."
+        : "WordPress Application Password. Saved encrypted with Electron safeStorage.")
       .addText((text) => {
         text.inputEl.type = "password";
         text
           .setPlaceholder("xxxx xxxx xxxx xxxx xxxx xxxx")
-          .setValue(this.plugin.settings.applicationPassword)
           .onChange(async (value) => {
-            this.plugin.settings.applicationPassword = value;
-            await this.plugin.saveSettings();
+            applicationPasswordInput = value;
           });
-      });
+      })
+      .addButton((button) => button
+        .setCta()
+        .setButtonText("Save")
+        .onClick(async () => {
+          await this.plugin.setSecret("wordpress.applicationPassword", applicationPasswordInput);
+          this.display();
+        }))
+      .addButton((button) => button
+        .setButtonText("Clear")
+        .onClick(async () => {
+          await this.plugin.deleteSecret("wordpress.applicationPassword");
+          this.display();
+        }));
 
     new Setting(containerEl)
       .setName("Default post status")
@@ -145,6 +171,7 @@ export class WordPressSettingTab extends PluginSettingTab {
   }
 
   private displayAliyunOssSettings(containerEl: HTMLElement): void {
+    let accessKeySecretInput = "";
     containerEl.createEl("h3", { text: "Aliyun OSS" });
 
     new Setting(containerEl)
@@ -181,15 +208,28 @@ export class WordPressSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName("AccessKey Secret")
-      .setDesc("Stored in Obsidian plugin data for this direct-upload demo.")
+      .setDesc(this.plugin.settings.aliyunOss.accessKeySecretSaved
+        ? "Saved encrypted with Electron safeStorage. Enter a new value to replace it."
+        : "Aliyun AccessKey Secret. Saved encrypted with Electron safeStorage.")
       .addText((text) => {
         text.inputEl.type = "password";
-        text.setValue(this.plugin.settings.aliyunOss.accessKeySecret)
-          .onChange(async (value) => {
-            this.plugin.settings.aliyunOss.accessKeySecret = value;
-            await this.plugin.saveSettings();
-          });
-      });
+        text.onChange(async (value) => {
+          accessKeySecretInput = value;
+        });
+      })
+      .addButton((button) => button
+        .setCta()
+        .setButtonText("Save")
+        .onClick(async () => {
+          await this.plugin.setSecret("aliyun.accessKeySecret", accessKeySecretInput);
+          this.display();
+        }))
+      .addButton((button) => button
+        .setButtonText("Clear")
+        .onClick(async () => {
+          await this.plugin.deleteSecret("aliyun.accessKeySecret");
+          this.display();
+        }));
 
     new Setting(containerEl)
       .setName("Public base URL")
@@ -237,13 +277,14 @@ export class WordPressSettingTab extends PluginSettingTab {
   private async runOssUploadTest(): Promise<void> {
     const logger = new PublishLogger();
     try {
-      const provider = createImageStorageProvider(this.plugin.settings, undefined, logger);
-      const result = await provider.uploadImage(createTestImageUploadInput(this.plugin.settings.aliyunOss.objectKeyRule));
+      const settings = await this.plugin.settingsWithSecrets();
+      const provider = createImageStorageProvider(settings, undefined, logger);
+      const result = await provider.uploadImage(createTestImageUploadInput(settings.aliyunOss.objectKeyRule));
       logger.info("OSS test upload completed", result);
 
       const checker = new HttpMediaUrlChecker(logger);
-      const status = await checker.check(result.url, this.plugin.settings.aliyunOss.testReferer || undefined);
-      logger.info("OSS test URL check completed", { url: result.url, status, referer: this.plugin.settings.aliyunOss.testReferer });
+      const status = await checker.check(result.url, settings.aliyunOss.testReferer || undefined);
+      logger.info("OSS test URL check completed", { url: result.url, status, referer: settings.aliyunOss.testReferer });
 
       new Notice(`OSS test upload ${status === "missing" ? "uploaded but URL is not accessible" : "completed"}: ${result.url}`, 12000);
       if (this.plugin.settings.debug || status !== "available") {

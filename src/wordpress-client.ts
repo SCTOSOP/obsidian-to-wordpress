@@ -131,6 +131,7 @@ export class WordPressClient {
       url,
       method,
       status: response.status,
+      headers,
       body: response.json ?? response.text,
     });
 
