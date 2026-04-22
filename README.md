@@ -1,5 +1,7 @@
 # Obsidian to WordPress
 
+[English](README.md) | [中文](README.zh-CN.md)
+
 Obsidian plugin for publishing the current note to a self-hosted WordPress site through the WordPress REST API using WordPress Application Passwords.
 
 ## Release Status
