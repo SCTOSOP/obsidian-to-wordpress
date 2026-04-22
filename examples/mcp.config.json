@@ -1,0 +1,15 @@
+{
+  "mcpServers": {
+    "obsidian-to-wordpress": {
+      "command": "node",
+      "args": [
+        "/absolute/path/to/obsidian-to-wordpress/dist/mcp-server.js"
+      ],
+      "env": {
+        "OTW_API_BASE_URL": "http://127.0.0.1:27187",
+        "OTW_API_KEY": "YOUR_OBSIDIAN_TO_WORDPRESS_API_KEY",
+        "OTW_MCP_LOG_PATH": "/tmp/obsidian-to-wordpress-mcp.log"
+      }
+    }
+  }
+}

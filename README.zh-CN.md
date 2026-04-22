@@ -369,3 +369,87 @@ docs/interfaces.md
 - 增加 Obsidian 插件版本管理流程。
 - 增加类型化错误和更细粒度错误信息。
 - 增加 README 截图和更完整安装说明。
+
+## 本地 API 与 MCP Bridge
+
+插件可以开放一个仅限 localhost 的本地 API，让 Codex 等 MCP Client 请求已经打开的 Obsidian 插件发布文章。这个设计明确依赖 Obsidian 已打开，并且当前库已启用本插件。
+
+安全默认值：
+
+- 本地 API 默认关闭。
+- 只监听 `127.0.0.1`。
+- 监听端口可以在插件设置中修改，默认是 `27187`。
+- API 请求必须携带 `Authorization: Bearer <api-key>`。
+- API key 在插件设置中自动生成，并且只显示一次。如果忘记，只能重新生成；旧 key 会立即失效。
+- API key 明文本身不会写入插件数据文件。插件只保存 salted SHA-256 hash 和 salt，用于请求校验。
+- API 触发 Obsidian 交互弹窗默认关闭。
+- 删除等破坏性 API 行为预留独立开关，第一版 MCP 工具不会默认启用。
+
+启用方式：
+
+1. 打开 Obsidian 设置。
+2. 进入 `Obsidian to WordPress` 插件设置页。
+3. 找到 `Local API / MCP`。
+4. 打开 `Enable local API`。
+5. 确认或修改 `API port`。
+6. 点击 `Generate` 生成 API key，并立即复制保存。
+
+当前本地 API：
+
+```http
+GET  /health
+GET  /published-posts
+POST /publish-current
+POST /publish-note
+POST /post-status
+POST /change-status
+POST /unpublish
+POST /delete-post
+```
+
+所有与笔记相关的接口都支持 vault 相对路径 `path`。如果不传 `path`，则使用当前打开的笔记。`/unpublish` 和 `/delete-post` 等破坏性接口需要先在 Obsidian 设置中开启 `Allow destructive API actions`。
+
+API 调用示例：
+
+```bash
+curl -X POST http://127.0.0.1:27187/publish-note \
+  -H 'Authorization: Bearer YOUR_API_KEY' \
+  -H 'Content-Type: application/json' \
+  -d '{"path":"folder/note.md","status":"draft","overwriteRemoteChanges":false}'
+```
+
+构建 MCP bridge：
+
+```bash
+npm run build:mcp
+```
+
+MCP 配置示例：
+
+```json
+{
+  "mcpServers": {
+    "obsidian-to-wordpress": {
+      "command": "node",
+      "args": ["/absolute/path/to/obsidian-to-wordpress/dist/mcp-server.js"],
+      "env": {
+        "OTW_API_BASE_URL": "http://127.0.0.1:27187",
+        "OTW_API_KEY": "paste-the-one-time-shown-api-key-here"
+      }
+    }
+  }
+}
+```
+
+当前 MCP 工具：
+
+- `obsidian_wordpress_health`
+- `list_published_obsidian_posts`
+- `publish_current_obsidian_note`
+- `publish_obsidian_note`
+- `get_obsidian_wordpress_post_status`
+- `change_obsidian_wordpress_post_status`
+- `unpublish_obsidian_wordpress_post`
+- `delete_obsidian_wordpress_post`
+
+更完整的 MCP 配置模板见 `docs/mcp-configuration.md`。

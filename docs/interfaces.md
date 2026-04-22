@@ -535,3 +535,46 @@ sequenceDiagram
   WP-->>Publisher: id/link/date/modified
   Publisher->>FM: writePublishResult()
 ```
+
+### `src/api/local-api-server.ts`
+
+Runs inside the Obsidian plugin and exposes a localhost-only HTTP API for MCP bridge processes.
+
+Public behavior:
+
+```http
+GET  /health
+GET  /published-posts
+POST /publish-current
+POST /publish-note
+POST /post-status
+POST /change-status
+POST /unpublish
+POST /delete-post
+```
+
+Endpoints that operate on notes accept an optional vault-relative `path`. If omitted, the active Obsidian note is used. Destructive endpoints require `settings.localApi.allowDestructiveActions`.
+
+Security contract:
+
+- Listens on `127.0.0.1` only.
+- Disabled by default through `settings.localApi.enabled`.
+- Uses configurable `settings.localApi.port`.
+- Requires `Authorization: Bearer <api-key>` for publish endpoints.
+- API key plaintext is never stored. `settings.localApi.apiKeyHash` and `settings.localApi.apiKeySalt` store only a salted SHA-256 verifier, and the API key is shown only immediately after generation.
+
+### `src/mcp/server.ts`
+
+Standalone stdio MCP bridge. It does not know WordPress or OSS credentials. It only forwards tool calls to the Obsidian plugin local API.
+
+Environment variables:
+
+- `OTW_API_BASE_URL`: local API URL, default `http://127.0.0.1:27187`.
+- `OTW_API_KEY`: API key generated in Obsidian plugin settings.
+
+Tools:
+
+- `obsidian_wordpress_health`
+- `list_published_obsidian_posts`
+- `publish_current_obsidian_note`
+- `publish_obsidian_note`

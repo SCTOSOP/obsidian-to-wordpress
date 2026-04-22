@@ -6,7 +6,7 @@ import { ObsidianMarkdownConverter } from "./markdown-converter";
 import { MetadataModal } from "./metadata-modal";
 import { confirmRemoteOverwrite } from "./remote-post-modals";
 import { WordPressClient } from "./wordpress-client";
-import type { Logger, PostMetadataInput, WordPressPluginSettings, WordPressPostPayload } from "./types";
+import type { Logger, PostMetadataInput, PublishOptions, PublishResult, WordPressPluginSettings, WordPressPostPayload } from "./types";
 
 export class PublishService {
   private frontmatter: FrontmatterService;
@@ -20,7 +20,7 @@ export class PublishService {
     this.frontmatter = new FrontmatterService(app);
   }
 
-  async publishCurrentNote(): Promise<void> {
+  async publishCurrentNote(options: PublishOptions = {}): Promise<PublishResult | undefined> {
     this.assertSettingsReady();
 
     const file = this.app.workspace.getActiveFile();
@@ -31,13 +31,38 @@ export class PublishService {
       throw new Error("The active file is not a Markdown note.");
     }
 
-    const metadata = this.frontmatter.read(file);
-    if (!this.frontmatter.hasRequiredMapping(metadata)) {
-      await this.collectInitialMetadata(file);
-      return;
+    return this.publishFile(file, options);
+  }
+
+  async publishNoteByPath(path: string, options: PublishOptions = {}): Promise<PublishResult | undefined> {
+    this.assertSettingsReady();
+
+    const file = this.app.vault.getAbstractFileByPath(path);
+    if (!(file instanceof TFile)) {
+      throw new Error(`Markdown note not found: ${path}`);
+    }
+    if (file.extension !== "md") {
+      throw new Error("The requested file is not a Markdown note.");
     }
 
-    await this.publishWithExistingMapping(file);
+    if (options.openBeforePublish) {
+      await this.app.workspace.getLeaf(false).openFile(file);
+    }
+
+    return this.publishFile(file, options);
+  }
+
+  private async publishFile(file: TFile, options: PublishOptions): Promise<PublishResult | undefined> {
+    const metadata = this.frontmatter.read(file);
+    if (!this.frontmatter.hasRequiredMapping(metadata)) {
+      if (options.allowInteractive === false) {
+        throw new Error("Missing required WordPress frontmatter: wp_title and wp_status are required. Enable interactive mode or add the fields before publishing.");
+      }
+      await this.collectInitialMetadata(file);
+      return undefined;
+    }
+
+    return this.publishWithExistingMapping(file, options);
   }
 
   private async collectInitialMetadata(file: TFile): Promise<void> {
@@ -82,18 +107,19 @@ export class PublishService {
     }
   }
 
-  private async publishWithExistingMapping(file: TFile): Promise<void> {
+  private async publishWithExistingMapping(file: TFile, options: PublishOptions): Promise<PublishResult> {
     const metadata = this.frontmatter.read(file);
     const input = this.frontmatter.buildInputFromFrontmatter(metadata);
-    await this.publish(file, input);
+    if (options.status) input.status = options.status;
+    return this.publish(file, input, options);
   }
 
-  private async publish(file: TFile, input: PostMetadataInput): Promise<void> {
+  private async publish(file: TFile, input: PostMetadataInput, options: PublishOptions = {}): Promise<PublishResult> {
     const rawContent = await this.app.vault.read(file);
     const markdownBody = stripFrontmatter(rawContent);
     const metadata = this.frontmatter.read(file);
     const client = new WordPressClient(this.settings, this.logger);
-    await this.ensureRemoteCanBeOverwritten(client, metadata.wp_post_id, metadata.wp_updated_at);
+    await this.ensureRemoteCanBeOverwritten(client, metadata.wp_post_id, metadata.wp_updated_at, options);
     const imageProcessor = new WordPressImageAssetProcessor(
       this.app,
       client,
@@ -124,20 +150,42 @@ export class PublishService {
     const response = await client.createOrUpdatePost(metadata.wp_post_id, payload);
     await this.frontmatter.writePublishResult(file, response);
 
-    new Notice(`Published to WordPress: ${response.link}`, 8000);
+    if (options.showNotice !== false) {
+      new Notice(`Published to WordPress: ${response.link}`, 8000);
+    }
     this.logger.info("Publish completed", response);
+    return {
+      postId: response.id,
+      url: response.link,
+      status: response.status,
+      notePath: file.path,
+      created: !metadata.wp_post_id,
+      updated: Boolean(metadata.wp_post_id),
+      publishedAt: response.date,
+      modifiedAt: response.modified,
+    };
   }
 
   private async ensureRemoteCanBeOverwritten(
     client: WordPressClient,
     postId: number | undefined,
     localUpdatedAt: string | undefined,
+    options: PublishOptions,
   ): Promise<void> {
     if (!postId || !localUpdatedAt) return;
 
     const remote = await client.getPost(postId);
     this.logger.info("Checked remote post before overwrite", { postId, localUpdatedAt, remoteModified: remote.modified });
     if (sameTimestamp(remote.modified, localUpdatedAt)) return;
+
+    if (options.overwriteRemoteChanges) {
+      this.logger.warn("Overwriting remotely modified WordPress post because overwriteRemoteChanges is enabled", { postId });
+      return;
+    }
+
+    if (options.allowInteractive === false) {
+      throw new Error("Remote WordPress post has changed since the last publish. Set overwriteRemoteChanges=true to overwrite it.");
+    }
 
     const decision = await confirmRemoteOverwrite(this.app, remote, localUpdatedAt);
     if (decision !== "overwrite") {

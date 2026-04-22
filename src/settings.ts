@@ -1,4 +1,4 @@
-import { App, Notice, PluginSettingTab, Setting } from "obsidian";
+import { App, Modal, Notice, PluginSettingTab, Setting } from "obsidian";
 import { confirmEndpointSwitch } from "./endpoint-switch-modal";
 import { createImageStorageProvider, createTestImageUploadInput } from "./storage/image-storage-provider";
 import { AliyunOssEndpointMismatchError } from "./storage/aliyun-oss-provider";
@@ -26,6 +26,15 @@ export const DEFAULT_SETTINGS: WordPressPluginSettings = {
     publicBaseUrl: "",
     objectKeyRule: "obsidian/{yyyy}/{mm}/{postTitle}/{hash}-{fileName}",
     testReferer: "",
+  },
+  localApi: {
+    enabled: false,
+    port: 27187,
+    apiKeySaved: false,
+    apiKeySalt: "",
+    apiKeyHash: "",
+    allowInteractive: false,
+    allowDestructiveActions: false,
   },
   encryptedSecrets: {},
   mediaCache: {},
@@ -168,6 +177,113 @@ export class WordPressSettingTab extends PluginSettingTab {
           this.plugin.settings.debug = value;
           await this.plugin.saveSettings();
         }));
+
+    this.displayLocalApiSettings(containerEl);
+  }
+
+  private displayLocalApiSettings(containerEl: HTMLElement): void {
+    containerEl.createEl("h3", { text: "Local API / MCP" });
+    containerEl.createEl("p", {
+      text: `Status: ${this.plugin.localApiStatus()}. The local API listens on 127.0.0.1 only and is intended for MCP clients such as Codex.`,
+    });
+
+    const enableApiSetting = new Setting(containerEl)
+      .setName("Enable local API")
+      .setDesc("Allow a local MCP bridge to ask this Obsidian plugin to publish notes. Requires an API key.")
+      .addToggle((toggle) => toggle
+        .setValue(this.plugin.settings.localApi.enabled)
+        .onChange(async (value) => {
+          if (value) {
+            const confirmed = await confirmDangerousSetting(
+              this.app,
+              "Enable local API?",
+              "This opens a localhost API that can publish notes through this Obsidian plugin when the caller has your API key.",
+            );
+            if (!confirmed) {
+              toggle.setValue(false);
+              return;
+            }
+          }
+          this.plugin.settings.localApi.enabled = value;
+          await this.plugin.saveSettings();
+          await this.plugin.restartLocalApiServer();
+          this.display();
+        }));
+    markDangerSetting(enableApiSetting);
+
+    new Setting(containerEl)
+      .setName("API port")
+      .setDesc("Localhost port used by the Obsidian plugin API. Default: 27187.")
+      .addText((text) => text
+        .setPlaceholder("27187")
+        .setValue(String(this.plugin.settings.localApi.port))
+        .onChange(async (value) => {
+          const parsed = Number(value);
+          if (Number.isInteger(parsed) && parsed > 0 && parsed <= 65535) {
+            this.plugin.settings.localApi.port = parsed;
+            await this.plugin.saveSettings();
+            await this.plugin.restartLocalApiServer();
+          }
+        }));
+
+    new Setting(containerEl)
+      .setName("API key")
+      .setDesc(this.plugin.settings.localApi.apiKeySaved
+        ? "An API key exists. It is never shown again. Generate a new key if you forgot it; the old key will stop working."
+        : "No API key exists. Generate one before connecting an MCP client.")
+      .addButton((button) => button
+        .setCta()
+        .setButtonText(this.plugin.settings.localApi.apiKeySaved ? "Regenerate" : "Generate")
+        .onClick(async () => {
+          const token = await this.plugin.generateLocalApiKey();
+          new ApiKeyModal(this.app, token).open();
+          await this.plugin.restartLocalApiServer();
+          this.display();
+        }));
+
+    const interactiveSetting = new Setting(containerEl)
+      .setName("Allow interactive Obsidian modals from API")
+      .setDesc("If enabled, API calls may open Obsidian modals for missing metadata or confirmations. Disabled is safer for automation.")
+      .addToggle((toggle) => toggle
+        .setValue(this.plugin.settings.localApi.allowInteractive)
+        .onChange(async (value) => {
+          if (value) {
+            const confirmed = await confirmDangerousSetting(
+              this.app,
+              "Allow API-triggered Obsidian modals?",
+              "MCP/API calls may open publish dialogs, overwrite confirmations, and large upload confirmations in Obsidian. This can cause automation to wait for your manual action.",
+            );
+            if (!confirmed) {
+              toggle.setValue(false);
+              return;
+            }
+          }
+          this.plugin.settings.localApi.allowInteractive = value;
+          await this.plugin.saveSettings();
+        }));
+    markDangerSetting(interactiveSetting);
+
+    const destructiveSetting = new Setting(containerEl)
+      .setName("Allow destructive API actions")
+      .setDesc("Reserved for future delete/unpublish MCP tools. Keep disabled unless you explicitly need remote deletion from MCP.")
+      .addToggle((toggle) => toggle
+        .setValue(this.plugin.settings.localApi.allowDestructiveActions)
+        .onChange(async (value) => {
+          if (value) {
+            const confirmed = await confirmDangerousSetting(
+              this.app,
+              "Allow destructive API actions?",
+              "Future MCP/API tools may be allowed to unpublish or delete remote WordPress posts. Only enable this if you understand the risk.",
+            );
+            if (!confirmed) {
+              toggle.setValue(false);
+              return;
+            }
+          }
+          this.plugin.settings.localApi.allowDestructiveActions = value;
+          await this.plugin.saveSettings();
+        }));
+    markDangerSetting(destructiveSetting);
   }
 
   private displayAliyunOssSettings(containerEl: HTMLElement): void {
@@ -313,5 +429,96 @@ export class WordPressSettingTab extends PluginSettingTab {
       new Notice(error instanceof Error ? error.message : "OSS test upload failed", 10000);
       showLogNotice("OSS test upload failed", logger);
     }
+  }
+}
+
+class ApiKeyModal extends Modal {
+  constructor(app: App, private token: string) {
+    super(app);
+  }
+
+  onOpen(): void {
+    const { contentEl } = this;
+    contentEl.empty();
+    contentEl.createEl("h2", { text: "Local API key" });
+    contentEl.createEl("p", {
+      text: "Copy this API key now. It will not be shown again. If you lose it, generate a new key and the old key will be invalidated.",
+    });
+
+    new Setting(contentEl)
+      .setName("API key")
+      .addText((text) => {
+        text.setValue(this.token);
+        text.inputEl.readOnly = true;
+        text.inputEl.select();
+      });
+
+    new Setting(contentEl)
+      .addButton((button) => button
+        .setCta()
+        .setButtonText("Copy")
+        .onClick(async () => {
+          await navigator.clipboard.writeText(this.token);
+          new Notice("API key copied", 4000);
+        }))
+      .addButton((button) => button
+        .setButtonText("Close")
+        .onClick(() => this.close()));
+  }
+}
+
+function markDangerSetting(setting: Setting): void {
+  setting.settingEl.style.borderLeft = "3px solid var(--text-error)";
+  setting.settingEl.style.paddingLeft = "12px";
+  setting.nameEl.style.color = "var(--text-error)";
+  setting.descEl.style.color = "var(--text-error)";
+}
+
+function confirmDangerousSetting(app: App, title: string, message: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    new DangerousSettingConfirmModal(app, title, message, resolve).open();
+  });
+}
+
+class DangerousSettingConfirmModal extends Modal {
+  constructor(
+    app: App,
+    private title: string,
+    private message: string,
+    private resolve: (confirmed: boolean) => void,
+  ) {
+    super(app);
+  }
+
+  onOpen(): void {
+    const { contentEl } = this;
+    contentEl.empty();
+    contentEl.createEl("h2", { text: this.title }).style.color = "var(--text-error)";
+    contentEl.createEl("p", { text: this.message });
+    contentEl.createEl("p", {
+      text: "Confirm only if you trust the local MCP client and understand what this setting allows.",
+    });
+
+    new Setting(contentEl)
+      .addButton((button) => button
+        .setButtonText("Cancel")
+        .onClick(() => this.finish(false)))
+      .addButton((button) => {
+        button
+          .setWarning()
+          .setButtonText("Enable")
+          .onClick(() => this.finish(true));
+      });
+  }
+
+  onClose(): void {
+    this.resolve(false);
+  }
+
+  private finish(confirmed: boolean): void {
+    const resolve = this.resolve;
+    this.resolve = () => undefined;
+    resolve(confirmed);
+    this.close();
   }
 }

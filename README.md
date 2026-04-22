@@ -332,3 +332,87 @@ Security boundaries:
 Migration:
 
 - If old plaintext values are found in plugin settings, they are migrated into encrypted storage on load and then removed from plaintext settings.
+
+## Local API And MCP Bridge
+
+The plugin can expose a localhost-only API so MCP clients such as Codex can ask the open Obsidian app to publish notes. This intentionally depends on Obsidian being open and the plugin being enabled.
+
+Security defaults:
+
+- The API is disabled by default.
+- It listens on `127.0.0.1` only.
+- The listening port is configurable in plugin settings. Default: `27187`.
+- API requests require `Authorization: Bearer <api-key>`.
+- The API key is generated in plugin settings and shown only once. If you forget it, generate a new key; the old key is invalidated.
+- The API key itself is never stored in plugin data. Only a salted SHA-256 hash and salt are saved for verification.
+- Interactive Obsidian modals from API calls are disabled by default.
+- Destructive API actions are reserved behind a separate setting and are not enabled by the first MCP tools.
+
+Plugin settings:
+
+1. Open Obsidian settings.
+2. Open `Obsidian to WordPress`.
+3. Find `Local API / MCP`.
+4. Enable `Enable local API`.
+5. Confirm or change `API port`.
+6. Click `Generate` for the API key and copy it immediately.
+
+Available local API endpoints:
+
+```http
+GET  /health
+GET  /published-posts
+POST /publish-current
+POST /publish-note
+POST /post-status
+POST /change-status
+POST /unpublish
+POST /delete-post
+```
+
+All note-specific endpoints accept a vault-relative `path`. If `path` is omitted, the current active note is used. Destructive endpoints such as `/unpublish` and `/delete-post` require `Allow destructive API actions` to be enabled in Obsidian settings.
+
+Example API request:
+
+```bash
+curl -X POST http://127.0.0.1:27187/publish-note \
+  -H 'Authorization: Bearer YOUR_API_KEY' \
+  -H 'Content-Type: application/json' \
+  -d '{"path":"folder/note.md","status":"draft","overwriteRemoteChanges":false}'
+```
+
+Build the MCP bridge:
+
+```bash
+npm run build:mcp
+```
+
+Example MCP configuration:
+
+```json
+{
+  "mcpServers": {
+    "obsidian-to-wordpress": {
+      "command": "node",
+      "args": ["/absolute/path/to/obsidian-to-wordpress/dist/mcp-server.js"],
+      "env": {
+        "OTW_API_BASE_URL": "http://127.0.0.1:27187",
+        "OTW_API_KEY": "paste-the-one-time-shown-api-key-here"
+      }
+    }
+  }
+}
+```
+
+MCP tools currently exposed:
+
+- `obsidian_wordpress_health`
+- `list_published_obsidian_posts`
+- `publish_current_obsidian_note`
+- `publish_obsidian_note`
+- `get_obsidian_wordpress_post_status`
+- `change_obsidian_wordpress_post_status`
+- `unpublish_obsidian_wordpress_post`
+- `delete_obsidian_wordpress_post`
+
+Detailed MCP setup templates are available in `docs/mcp-configuration.md`.

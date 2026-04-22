@@ -24,6 +24,216 @@ __export(main_exports, {
 module.exports = __toCommonJS(main_exports);
 var import_obsidian14 = require("obsidian");
 
+// src/api/local-api-server.ts
+var LocalApiServer = class {
+  constructor(plugin, logger) {
+    this.plugin = plugin;
+    this.logger = logger;
+  }
+  async start() {
+    if (!this.plugin.settings.localApi.enabled) return;
+    if (this.server) return;
+    const http = loadHttp();
+    const port = this.plugin.settings.localApi.port;
+    this.server = http.createServer((request, response) => {
+      this.handleRequest(request, response).catch((error) => {
+        this.logger.error("Local API request failed", serializeError(error));
+        sendJson(response, 500, {
+          ok: false,
+          errorCode: "INTERNAL_ERROR",
+          message: error instanceof Error ? error.message : "Local API internal error"
+        });
+      });
+    });
+    await new Promise((resolve, reject) => {
+      var _a, _b;
+      (_a = this.server) == null ? void 0 : _a.once("error", reject);
+      (_b = this.server) == null ? void 0 : _b.listen(port, "127.0.0.1", () => {
+        var _a2;
+        (_a2 = this.server) == null ? void 0 : _a2.off("error", reject);
+        this.runningPort = port;
+        this.logger.info("Local API server started", { host: "127.0.0.1", port });
+        resolve();
+      });
+    });
+  }
+  async stop() {
+    const server = this.server;
+    if (!server) return;
+    this.server = void 0;
+    this.runningPort = void 0;
+    await new Promise((resolve, reject) => {
+      server.close((error) => error ? reject(error) : resolve());
+    });
+    this.logger.info("Local API server stopped");
+  }
+  async restart() {
+    await this.stop();
+    await this.start();
+  }
+  isRunning() {
+    var _a;
+    return Boolean((_a = this.server) == null ? void 0 : _a.listening);
+  }
+  getPort() {
+    return this.runningPort;
+  }
+  async handleRequest(request, response) {
+    var _a;
+    setCorsHeaders(response);
+    if (request.method === "OPTIONS") {
+      response.writeHead(204);
+      response.end();
+      return;
+    }
+    const url = new URL((_a = request.url) != null ? _a : "/", `http://127.0.0.1:${this.plugin.settings.localApi.port}`);
+    this.logger.info("Local API request", { method: request.method, path: url.pathname });
+    if (url.pathname === "/health" && request.method === "GET") {
+      sendJson(response, 200, {
+        ok: true,
+        data: {
+          plugin: "obsidian-to-wordpress",
+          version: this.plugin.manifest.version,
+          vault: this.plugin.app.vault.getName(),
+          apiEnabled: this.plugin.settings.localApi.enabled,
+          apiRunning: this.isRunning()
+        }
+      });
+      return;
+    }
+    if (!await this.authorize(request)) {
+      sendJson(response, 401, { ok: false, errorCode: "UNAUTHORIZED", message: "Missing or invalid API key." });
+      return;
+    }
+    if (url.pathname === "/published-posts" && request.method === "GET") {
+      const posts = await this.plugin.listPublishedPostsFromApi();
+      sendJson(response, 200, { ok: true, data: posts });
+      return;
+    }
+    if (url.pathname === "/publish-current" && request.method === "POST") {
+      const body = await readJson(request);
+      const result = await this.plugin.publishCurrentNoteFromApi({
+        status: body.status,
+        overwriteRemoteChanges: Boolean(body.overwriteRemoteChanges),
+        allowInteractive: this.resolveInteractive(body.allowInteractive),
+        showNotice: false,
+        source: "api"
+      });
+      this.sendPublishResult(response, result);
+      return;
+    }
+    if (url.pathname === "/publish-note" && request.method === "POST") {
+      const body = await readJson(request);
+      if (!body.path) {
+        sendJson(response, 400, { ok: false, errorCode: "MISSING_PATH", message: "Request body must include path." });
+        return;
+      }
+      const result = await this.plugin.publishNoteFromApi(body.path, {
+        status: body.status,
+        overwriteRemoteChanges: Boolean(body.overwriteRemoteChanges),
+        allowInteractive: this.resolveInteractive(body.allowInteractive),
+        openBeforePublish: Boolean(body.openBeforePublish),
+        showNotice: false,
+        source: "api"
+      });
+      this.sendPublishResult(response, result);
+      return;
+    }
+    if (url.pathname === "/post-status" && request.method === "POST") {
+      const body = await readJson(request);
+      const remote = await this.plugin.getRemoteStatusFromApi(body.path);
+      sendJson(response, 200, { ok: true, data: remote, logs: this.logger.dump() });
+      return;
+    }
+    if (url.pathname === "/unpublish" && request.method === "POST") {
+      if (!this.plugin.settings.localApi.allowDestructiveActions) {
+        sendJson(response, 403, {
+          ok: false,
+          errorCode: "DESTRUCTIVE_ACTIONS_DISABLED",
+          message: "Enable destructive local API actions in plugin settings before unpublishing remote posts."
+        });
+        return;
+      }
+      const body = await readJson(request);
+      const remote = await this.plugin.unpublishFromApi(body.path);
+      sendJson(response, 200, { ok: true, data: remote, logs: this.logger.dump() });
+      return;
+    }
+    if (url.pathname === "/delete-post" && request.method === "POST") {
+      if (!this.plugin.settings.localApi.allowDestructiveActions) {
+        sendJson(response, 403, {
+          ok: false,
+          errorCode: "DESTRUCTIVE_ACTIONS_DISABLED",
+          message: "Enable destructive local API actions in plugin settings before deleting remote posts."
+        });
+        return;
+      }
+      const body = await readJson(request);
+      const result = await this.plugin.deleteRemotePostFromApi(body.path, Boolean(body.force));
+      sendJson(response, 200, { ok: true, data: result, logs: this.logger.dump() });
+      return;
+    }
+    if (url.pathname === "/change-status" && request.method === "POST") {
+      const body = await readJson(request);
+      if (!body.status) {
+        sendJson(response, 400, { ok: false, errorCode: "MISSING_STATUS", message: "Request body must include status." });
+        return;
+      }
+      const result = await this.plugin.changePostStatusFromApi(body.path, body.status);
+      sendJson(response, 200, { ok: true, data: result, logs: this.logger.dump() });
+      return;
+    }
+    sendJson(response, 404, { ok: false, errorCode: "NOT_FOUND", message: "Local API endpoint not found." });
+  }
+  async authorize(request) {
+    var _a;
+    const header = String((_a = request.headers.authorization) != null ? _a : "");
+    const provided = header.startsWith("Bearer ") ? header.slice("Bearer ".length).trim() : "";
+    return this.plugin.verifyLocalApiKey(provided);
+  }
+  resolveInteractive(requested) {
+    return Boolean(requested && this.plugin.settings.localApi.allowInteractive);
+  }
+  sendPublishResult(response, result) {
+    if (!result) {
+      sendJson(response, 202, {
+        ok: true,
+        data: { interactive: true, message: "Interactive Obsidian publish flow was opened." },
+        logs: this.logger.dump()
+      });
+      return;
+    }
+    sendJson(response, 200, { ok: true, data: result, logs: this.logger.dump() });
+  }
+};
+function loadHttp() {
+  if (typeof require !== "function") throw new Error("Node HTTP module is unavailable in this Obsidian environment.");
+  return require("http");
+}
+async function readJson(request) {
+  const chunks = [];
+  for await (const chunk of request) {
+    chunks.push(typeof chunk === "string" ? Buffer.from(chunk) : chunk);
+  }
+  const raw = Buffer.concat(chunks).toString("utf8");
+  if (!raw.trim()) return {};
+  return JSON.parse(raw);
+}
+function sendJson(response, status, body) {
+  setCorsHeaders(response);
+  response.writeHead(status, { "content-type": "application/json; charset=utf-8" });
+  response.end(JSON.stringify(body));
+}
+function setCorsHeaders(response) {
+  response.setHeader("access-control-allow-origin", "http://127.0.0.1");
+  response.setHeader("access-control-allow-methods", "GET,POST,DELETE,OPTIONS");
+  response.setHeader("access-control-allow-headers", "authorization,content-type");
+}
+function serializeError(error) {
+  if (error instanceof Error) return { name: error.name, message: error.message, stack: error.stack };
+  return error;
+}
+
 // src/frontmatter.ts
 var FrontmatterService = class {
   constructor(app) {
@@ -177,17 +387,183 @@ function redactSecretText(value) {
   return value.replace(/(Authorization:\s*)[^\n]+/gi, "$1[REDACTED]").replace(/(OSSAccessKeyId=)[^&\s]+/gi, "$1[REDACTED]").replace(/(Signature=)[^&\s]+/gi, "$1[REDACTED]").replace(/(AccessKeyId>)[^<]+/gi, "$1[REDACTED]").replace(/(SignatureProvided>)[^<]+/gi, "$1[REDACTED]");
 }
 
+// src/wordpress-client.ts
+var import_obsidian2 = require("obsidian");
+var WordPressClient = class {
+  constructor(settings, logger) {
+    this.settings = settings;
+    this.logger = logger;
+  }
+  async getPost(postId) {
+    this.logger.info("Fetching WordPress post", { postId });
+    return this.request(`/wp-json/wp/v2/posts/${postId}?context=edit`, "GET");
+  }
+  async createOrUpdatePost(postId, payload) {
+    const endpoint = postId ? `/wp-json/wp/v2/posts/${postId}` : "/wp-json/wp/v2/posts";
+    this.logger.info(postId ? "Updating WordPress post" : "Creating WordPress post", { endpoint, payload });
+    return this.request(endpoint, "POST", payload);
+  }
+  async updatePostStatus(postId, status) {
+    this.logger.info("Updating WordPress post status", { postId, status });
+    return this.request(`/wp-json/wp/v2/posts/${postId}`, "POST", { status });
+  }
+  async deletePost(postId, force) {
+    this.logger.info(force ? "Deleting WordPress post permanently" : "Moving WordPress post to trash", { postId });
+    return this.request(`/wp-json/wp/v2/posts/${postId}?force=${force ? "true" : "false"}`, "DELETE");
+  }
+  async uploadMedia(fileName, mimeType, body) {
+    this.logger.info("Uploading WordPress media", { fileName, mimeType, bytes: body.byteLength });
+    return this.requestBinary("/wp-json/wp/v2/media", "POST", body, {
+      "Content-Type": mimeType,
+      "Content-Disposition": `attachment; filename="${escapeHeaderValue(fileName)}"`
+    });
+  }
+  async getCategories() {
+    this.logger.info("Fetching WordPress categories");
+    return this.request("/wp-json/wp/v2/categories?per_page=100&hide_empty=false", "GET");
+  }
+  async createCategory(name, parent) {
+    this.logger.info("Creating WordPress category", { name, parent });
+    return this.request("/wp-json/wp/v2/categories", "POST", {
+      name,
+      ...parent ? { parent } : {}
+    });
+  }
+  async deleteCategory(categoryId) {
+    this.logger.info("Deleting WordPress category", { categoryId });
+    return this.request(`/wp-json/wp/v2/categories/${categoryId}?force=true`, "DELETE");
+  }
+  async resolveTerms(taxonomy, names) {
+    const ids = [];
+    for (const name of names) {
+      const existing = await this.findTerm(taxonomy, name);
+      if (existing) {
+        ids.push(existing.id);
+        continue;
+      }
+      const created = await this.createTerm(taxonomy, name);
+      ids.push(created.id);
+    }
+    return ids;
+  }
+  async findTerm(taxonomy, name) {
+    this.logger.info("Looking up WordPress taxonomy term", { taxonomy, name });
+    const terms = await this.request(`/wp-json/wp/v2/${taxonomy}?search=${encodeURIComponent(name)}`, "GET");
+    return terms.find((term) => term.name.toLowerCase() === name.toLowerCase());
+  }
+  async createTerm(taxonomy, name) {
+    this.logger.info("Creating WordPress taxonomy term", { taxonomy, name });
+    return this.request(`/wp-json/wp/v2/${taxonomy}`, "POST", { name });
+  }
+  async requestBinary(path, method, body, extraHeaders) {
+    return this.requestRaw(path, method, body, extraHeaders);
+  }
+  async request(path, method, body) {
+    const headers = {};
+    let requestBody;
+    if (body !== void 0) {
+      headers["Content-Type"] = "application/json";
+      requestBody = JSON.stringify(body);
+    }
+    return this.requestRaw(path, method, requestBody, headers);
+  }
+  async requestRaw(path, method, body, extraHeaders = {}) {
+    var _a;
+    const siteUrl = this.settings.siteUrl.replace(/\/$/, "");
+    const url = `${siteUrl}${path}`;
+    const headers = {
+      Authorization: `Basic ${btoa(`${this.settings.username}:${this.settings.applicationPassword}`)}`,
+      ...extraHeaders
+    };
+    const response = await (0, import_obsidian2.requestUrl)({
+      url,
+      method,
+      headers,
+      body,
+      throw: false
+    });
+    this.logger.info("WordPress REST response", {
+      url,
+      method,
+      status: response.status,
+      headers,
+      body: (_a = response.json) != null ? _a : response.text
+    });
+    if (response.status < 200 || response.status >= 300) {
+      const errorText = typeof response.text === "string" ? response.text : JSON.stringify(response.json);
+      throw new Error(`WordPress REST request failed: ${response.status} ${errorText}`);
+    }
+    return response.json;
+  }
+};
+function escapeHeaderValue(value) {
+  return value.replace(/["\r\n]/g, "_");
+}
+
+// src/published-posts-service.ts
+var PublishedPostsService = class {
+  constructor(app, settings, logger) {
+    this.app = app;
+    this.settings = settings;
+    this.logger = logger;
+    this.frontmatter = new FrontmatterService(app);
+  }
+  async listPublishedPosts() {
+    const files = this.app.vault.getMarkdownFiles();
+    const client = new WordPressClient(this.settings, this.logger);
+    const results = [];
+    for (const file of files) {
+      const item = await this.buildStatusItem(file, client);
+      if (item) results.push(item);
+    }
+    this.logger.info("Listed published Obsidian WordPress posts", { count: results.length });
+    return results;
+  }
+  async buildStatusItem(file, client) {
+    const metadata = this.frontmatter.read(file);
+    if (!metadata.wp_post_id) return void 0;
+    const item = {
+      notePath: file.path,
+      postId: metadata.wp_post_id,
+      localTitle: metadata.wp_title,
+      localStatus: metadata.wp_status,
+      localUrl: metadata.wp_url,
+      localUpdatedAt: metadata.wp_updated_at
+    };
+    try {
+      item.remote = summarizeRemotePost(await client.getPost(metadata.wp_post_id));
+    } catch (error) {
+      item.error = error instanceof Error ? error.message : "Failed to fetch remote post status";
+      this.logger.warn("Failed to fetch remote status for published note", { file: file.path, postId: metadata.wp_post_id, error: item.error });
+    }
+    return item;
+  }
+};
+function summarizeRemotePost(remote) {
+  var _a;
+  return {
+    id: remote.id,
+    status: remote.status,
+    link: remote.link,
+    date: remote.date,
+    modified: remote.modified,
+    title: (_a = remote.title) == null ? void 0 : _a.rendered,
+    slug: remote.slug,
+    type: remote.type
+  };
+}
+
 // src/publisher.ts
 var import_obsidian10 = require("obsidian");
 
 // src/endpoint-switch-modal.ts
-var import_obsidian2 = require("obsidian");
+var import_obsidian3 = require("obsidian");
 function confirmEndpointSwitch(app, currentEndpoint, recommendedEndpoint) {
   return new Promise((resolve) => {
     new EndpointSwitchModal(app, currentEndpoint, recommendedEndpoint, resolve).open();
   });
 }
-var EndpointSwitchModal = class extends import_obsidian2.Modal {
+var EndpointSwitchModal = class extends import_obsidian3.Modal {
   constructor(app, currentEndpoint, recommendedEndpoint, resolve) {
     super(app);
     this.currentEndpoint = currentEndpoint;
@@ -204,7 +580,7 @@ var EndpointSwitchModal = class extends import_obsidian2.Modal {
     });
     contentEl.createEl("p", { text: `Current: ${this.currentEndpoint || "(empty)"}` });
     contentEl.createEl("p", { text: `Recommended: ${this.recommendedEndpoint}` });
-    new import_obsidian2.Setting(contentEl).addButton((button) => button.setButtonText("Keep current").onClick(() => this.finish(false))).addButton((button) => button.setCta().setButtonText("Switch endpoint").onClick(() => this.finish(true)));
+    new import_obsidian3.Setting(contentEl).addButton((button) => button.setButtonText("Keep current").onClick(() => this.finish(false))).addButton((button) => button.setCta().setButtonText("Switch endpoint").onClick(() => this.finish(true)));
   }
   onClose() {
     this.contentEl.empty();
@@ -260,7 +636,7 @@ var BrowserImageCompressor = class {
       });
       return prepared;
     } catch (error) {
-      this.logger.warn("Image compression failed; uploading original image", serializeError(error));
+      this.logger.warn("Image compression failed; uploading original image", serializeError2(error));
       return this.original(file, body, mimeType, "Compression failed");
     }
   }
@@ -301,7 +677,7 @@ function extensionForMimeType(mimeType) {
 function replaceExtension(fileName, extension) {
   return fileName.replace(/\.[^.]+$/, `.${extension}`);
 }
-function serializeError(error) {
+function serializeError2(error) {
   if (error instanceof Error) {
     return { name: error.name, message: error.message, stack: error.stack };
   }
@@ -309,7 +685,7 @@ function serializeError(error) {
 }
 
 // src/media-url-checker.ts
-var import_obsidian3 = require("obsidian");
+var import_obsidian4 = require("obsidian");
 var HttpMediaUrlChecker = class {
   constructor(logger) {
     this.logger = logger;
@@ -318,13 +694,13 @@ var HttpMediaUrlChecker = class {
     this.logger.info("Checking cached media URL", { url, referer });
     const headers = referer ? { Referer: referer } : void 0;
     try {
-      const head = await (0, import_obsidian3.requestUrl)({ url, method: "HEAD", headers, throw: false });
+      const head = await (0, import_obsidian4.requestUrl)({ url, method: "HEAD", headers, throw: false });
       const headStatus = classifyStatus(head.status);
       if (headStatus !== "unknown") {
         this.logger.info("Cached media HEAD check completed", { url, status: head.status, result: headStatus });
         return headStatus;
       }
-      const get = await (0, import_obsidian3.requestUrl)({
+      const get = await (0, import_obsidian4.requestUrl)({
         url,
         method: "GET",
         headers: { ...headers != null ? headers : {}, Range: "bytes=0-0" },
@@ -334,7 +710,7 @@ var HttpMediaUrlChecker = class {
       this.logger.info("Cached media GET check completed", { url, status: get.status, result: getStatus });
       return getStatus;
     } catch (error) {
-      this.logger.warn("Cached media URL check failed due to network or client error", serializeError2(error));
+      this.logger.warn("Cached media URL check failed due to network or client error", serializeError3(error));
       return "unknown";
     }
   }
@@ -344,7 +720,7 @@ function classifyStatus(status) {
   if (status === 404 || status === 410) return "missing";
   return "unknown";
 }
-function serializeError2(error) {
+function serializeError3(error) {
   if (error instanceof Error) {
     return { name: error.name, message: error.message, stack: error.stack };
   }
@@ -352,7 +728,7 @@ function serializeError2(error) {
 }
 
 // src/storage/aliyun-oss-provider.ts
-var import_obsidian4 = require("obsidian");
+var import_obsidian5 = require("obsidian");
 
 // src/storage/object-key-builder.ts
 async function buildObjectKey(rule, input) {
@@ -411,7 +787,7 @@ var AliyunOssStorageProvider = class {
       mimeType: input.mimeType,
       bytes: input.body.byteLength
     });
-    const response = await (0, import_obsidian4.requestUrl)({
+    const response = await (0, import_obsidian5.requestUrl)({
       url,
       method: "PUT",
       headers: {
@@ -622,13 +998,13 @@ function base64ToArrayBuffer(base64) {
 }
 
 // src/upload-confirm-modal.ts
-var import_obsidian5 = require("obsidian");
+var import_obsidian6 = require("obsidian");
 function confirmLargeImageUpload(app, info) {
   return new Promise((resolve) => {
     new LargeImageUploadModal(app, info, resolve).open();
   });
 }
-var LargeImageUploadModal = class extends import_obsidian5.Modal {
+var LargeImageUploadModal = class extends import_obsidian6.Modal {
   constructor(app, info, resolve) {
     super(app);
     this.info = info;
@@ -645,7 +1021,7 @@ var LargeImageUploadModal = class extends import_obsidian5.Modal {
     contentEl.createEl("p", {
       text: this.info.compressed ? `Original size: ${formatBytes(this.info.originalBytes)}. The image was compressed before this check.` : "This image could not be compressed smaller, so the original file will be uploaded."
     });
-    new import_obsidian5.Setting(contentEl).addButton((button) => button.setButtonText("Cancel upload").onClick(() => this.finish(false))).addButton((button) => button.setCta().setButtonText("Upload anyway").onClick(() => this.finish(true)));
+    new import_obsidian6.Setting(contentEl).addButton((button) => button.setButtonText("Cancel upload").onClick(() => this.finish(false))).addButton((button) => button.setCta().setButtonText("Upload anyway").onClick(() => this.finish(true)));
   }
   onClose() {
     this.contentEl.empty();
@@ -944,7 +1320,7 @@ function escapeMarkdownAlt(value) {
 }
 
 // src/markdown-converter.ts
-var import_obsidian6 = require("obsidian");
+var import_obsidian7 = require("obsidian");
 
 // src/special-formats.ts
 var ObsidianSpecialFormatTransformer = class {
@@ -1289,9 +1665,9 @@ var ObsidianMarkdownConverter = class {
     const transformer = new ObsidianSpecialFormatTransformer(this.logger);
     const renderableMarkdown = transformer.beforeRender(markdown);
     const container = document.createElement("div");
-    const component = new import_obsidian6.Component();
+    const component = new import_obsidian7.Component();
     try {
-      await import_obsidian6.MarkdownRenderer.render(this.app, renderableMarkdown, container, sourcePath, component);
+      await import_obsidian7.MarkdownRenderer.render(this.app, renderableMarkdown, container, sourcePath, component);
       return transformer.afterRender(container.innerHTML);
     } finally {
       component.unload();
@@ -1300,8 +1676,8 @@ var ObsidianMarkdownConverter = class {
 };
 
 // src/metadata-modal.ts
-var import_obsidian7 = require("obsidian");
-var MetadataModal = class extends import_obsidian7.Modal {
+var import_obsidian8 = require("obsidian");
+var MetadataModal = class extends import_obsidian8.Modal {
   constructor(app, defaults, onSubmit, categoryActions) {
     var _a;
     super(app);
@@ -1330,23 +1706,23 @@ var MetadataModal = class extends import_obsidian7.Modal {
     contentEl.createEl("p", {
       text: "This note has no WordPress mapping yet. Fill the fields below; they will be saved to the note frontmatter."
     });
-    new import_obsidian7.Setting(contentEl).setName("Title").setDesc("Required. WordPress post title.").addText((text) => text.setValue(this.title).onChange((value) => {
+    new import_obsidian8.Setting(contentEl).setName("Title").setDesc("Required. WordPress post title.").addText((text) => text.setValue(this.title).onChange((value) => {
       this.title = value;
     }));
-    new import_obsidian7.Setting(contentEl).setName("Slug").setDesc("Optional. Leave blank to let WordPress generate it.").addText((text) => text.setPlaceholder("my-post-slug").setValue(this.slug).onChange((value) => {
+    new import_obsidian8.Setting(contentEl).setName("Slug").setDesc("Optional. Leave blank to let WordPress generate it.").addText((text) => text.setPlaceholder("my-post-slug").setValue(this.slug).onChange((value) => {
       this.slug = value;
     }));
-    new import_obsidian7.Setting(contentEl).setName("Status").setDesc("Required. Draft is safest for the first publish.").addDropdown((dropdown) => dropdown.addOption("draft", "Draft").addOption("publish", "Publish").addOption("private", "Private").addOption("pending", "Pending").setValue(this.status).onChange((value) => {
+    new import_obsidian8.Setting(contentEl).setName("Status").setDesc("Required. Draft is safest for the first publish.").addDropdown((dropdown) => dropdown.addOption("draft", "Draft").addOption("publish", "Publish").addOption("private", "Private").addOption("pending", "Pending").setValue(this.status).onChange((value) => {
       this.status = value;
     }));
-    new import_obsidian7.Setting(contentEl).setName("Excerpt").setDesc("Optional.").addTextArea((text) => text.setValue(this.excerpt).onChange((value) => {
+    new import_obsidian8.Setting(contentEl).setName("Excerpt").setDesc("Optional.").addTextArea((text) => text.setValue(this.excerpt).onChange((value) => {
       this.excerpt = value;
     }));
     this.renderCategorySelector(contentEl);
-    new import_obsidian7.Setting(contentEl).setName("Tags").setDesc("Optional comma-separated tag names. Missing terms will be created.").addText((text) => text.setPlaceholder("obsidian, wordpress").setValue(this.tags).onChange((value) => {
+    new import_obsidian8.Setting(contentEl).setName("Tags").setDesc("Optional comma-separated tag names. Missing terms will be created.").addText((text) => text.setPlaceholder("obsidian, wordpress").setValue(this.tags).onChange((value) => {
       this.tags = value;
     }));
-    new import_obsidian7.Setting(contentEl).addButton((button) => button.setButtonText("Cancel").onClick(() => this.close())).addButton((button) => button.setCta().setButtonText("Save and publish").onClick(() => {
+    new import_obsidian8.Setting(contentEl).addButton((button) => button.setButtonText("Cancel").onClick(() => this.close())).addButton((button) => button.setCta().setButtonText("Save and publish").onClick(() => {
       const title = this.title.trim();
       if (!title) {
         this.contentEl.createEl("p", { text: "Title is required.", cls: "mod-warning" });
@@ -1369,7 +1745,7 @@ var MetadataModal = class extends import_obsidian7.Modal {
       text: this.categoryActions ? "Select WordPress categories. You can add or delete categories directly here." : "WordPress categories could not be loaded; publish will continue without categories."
     });
     if (!this.categoryActions) return;
-    new import_obsidian7.Setting(contentEl).setName("Add category").addText((text) => text.setPlaceholder("New category name").setValue(this.newCategoryName).onChange((value) => {
+    new import_obsidian8.Setting(contentEl).setName("Add category").addText((text) => text.setPlaceholder("New category name").setValue(this.newCategoryName).onChange((value) => {
       this.newCategoryName = value;
     })).addDropdown((dropdown) => {
       dropdown.addOption("0", "No parent");
@@ -1401,7 +1777,7 @@ var MetadataModal = class extends import_obsidian7.Modal {
       return;
     }
     flattenCategoryTree(this.categories).forEach(({ category, depth }) => {
-      new import_obsidian7.Setting(contentEl).setName(`${"  ".repeat(depth)}${depth > 0 ? "- " : ""}${category.name}`).setDesc(`slug: ${category.slug}`).addToggle((toggle) => toggle.setValue(this.selectedCategoryNames.has(category.name)).onChange((value) => {
+      new import_obsidian8.Setting(contentEl).setName(`${"  ".repeat(depth)}${depth > 0 ? "- " : ""}${category.name}`).setDesc(`slug: ${category.slug}`).addToggle((toggle) => toggle.setValue(this.selectedCategoryNames.has(category.name)).onChange((value) => {
         if (value) this.selectedCategoryNames.add(category.name);
         else this.selectedCategoryNames.delete(category.name);
       })).addButton((button) => button.setWarning().setButtonText("Delete").onClick(async () => {
@@ -1450,7 +1826,7 @@ function emptyToUndefined2(value) {
 }
 
 // src/remote-post-modals.ts
-var import_obsidian8 = require("obsidian");
+var import_obsidian9 = require("obsidian");
 function confirmRemoteOverwrite(app, remote, localUpdatedAt) {
   return new Promise((resolve) => {
     new RemoteConflictModal(app, remote, localUpdatedAt, resolve).open();
@@ -1461,7 +1837,7 @@ function confirmRemoteDelete(app, remote) {
     new RemoteDeleteModal(app, remote, resolve).open();
   });
 }
-var RemoteStatusModal = class extends import_obsidian8.Modal {
+var RemoteStatusModal = class extends import_obsidian9.Modal {
   constructor(app, remote) {
     super(app);
     this.remote = remote;
@@ -1471,13 +1847,13 @@ var RemoteStatusModal = class extends import_obsidian8.Modal {
     contentEl.empty();
     contentEl.createEl("h2", { text: "WordPress remote post status" });
     renderPostSummary(contentEl, this.remote);
-    new import_obsidian8.Setting(contentEl).addButton((button) => button.setButtonText("Close").onClick(() => this.close()));
+    new import_obsidian9.Setting(contentEl).addButton((button) => button.setButtonText("Close").onClick(() => this.close()));
   }
   onClose() {
     this.contentEl.empty();
   }
 };
-var RemoteConflictModal = class extends import_obsidian8.Modal {
+var RemoteConflictModal = class extends import_obsidian9.Modal {
   constructor(app, remote, localUpdatedAt, resolve) {
     super(app);
     this.remote = remote;
@@ -1493,7 +1869,7 @@ var RemoteConflictModal = class extends import_obsidian8.Modal {
       text: "The WordPress post appears to have been modified after the last successful publish from Obsidian."
     });
     renderPostSummary(contentEl, this.remote, this.localUpdatedAt);
-    new import_obsidian8.Setting(contentEl).addButton((button) => button.setButtonText("Cancel publish").onClick(() => this.finish("cancel"))).addButton((button) => button.setWarning().setButtonText("Overwrite remote").onClick(() => this.finish("overwrite")));
+    new import_obsidian9.Setting(contentEl).addButton((button) => button.setButtonText("Cancel publish").onClick(() => this.finish("cancel"))).addButton((button) => button.setWarning().setButtonText("Overwrite remote").onClick(() => this.finish("overwrite")));
   }
   onClose() {
     this.contentEl.empty();
@@ -1506,7 +1882,7 @@ var RemoteConflictModal = class extends import_obsidian8.Modal {
     this.close();
   }
 };
-var RemoteDeleteModal = class extends import_obsidian8.Modal {
+var RemoteDeleteModal = class extends import_obsidian9.Modal {
   constructor(app, remote, resolve) {
     super(app);
     this.remote = remote;
@@ -1519,7 +1895,7 @@ var RemoteDeleteModal = class extends import_obsidian8.Modal {
     contentEl.createEl("h2", { text: "Remove WordPress post" });
     contentEl.createEl("p", { text: "Choose how to remove the remote WordPress post." });
     renderPostSummary(contentEl, this.remote);
-    new import_obsidian8.Setting(contentEl).addButton((button) => button.setButtonText("Cancel").onClick(() => this.finish("cancel"))).addButton((button) => button.setButtonText("Move to trash").onClick(() => this.finish("trash"))).addButton((button) => button.setWarning().setButtonText("Delete permanently").onClick(() => this.finish("delete")));
+    new import_obsidian9.Setting(contentEl).addButton((button) => button.setButtonText("Cancel").onClick(() => this.finish("cancel"))).addButton((button) => button.setButtonText("Move to trash").onClick(() => this.finish("trash"))).addButton((button) => button.setWarning().setButtonText("Delete permanently").onClick(() => this.finish("delete")));
   }
   onClose() {
     this.contentEl.empty();
@@ -1546,119 +1922,6 @@ function addRow(list, label, value) {
   list.createEl("dd", { text: value || "(empty)" });
 }
 
-// src/wordpress-client.ts
-var import_obsidian9 = require("obsidian");
-var WordPressClient = class {
-  constructor(settings, logger) {
-    this.settings = settings;
-    this.logger = logger;
-  }
-  async getPost(postId) {
-    this.logger.info("Fetching WordPress post", { postId });
-    return this.request(`/wp-json/wp/v2/posts/${postId}?context=edit`, "GET");
-  }
-  async createOrUpdatePost(postId, payload) {
-    const endpoint = postId ? `/wp-json/wp/v2/posts/${postId}` : "/wp-json/wp/v2/posts";
-    this.logger.info(postId ? "Updating WordPress post" : "Creating WordPress post", { endpoint, payload });
-    return this.request(endpoint, "POST", payload);
-  }
-  async updatePostStatus(postId, status) {
-    this.logger.info("Updating WordPress post status", { postId, status });
-    return this.request(`/wp-json/wp/v2/posts/${postId}`, "POST", { status });
-  }
-  async deletePost(postId, force) {
-    this.logger.info(force ? "Deleting WordPress post permanently" : "Moving WordPress post to trash", { postId });
-    return this.request(`/wp-json/wp/v2/posts/${postId}?force=${force ? "true" : "false"}`, "DELETE");
-  }
-  async uploadMedia(fileName, mimeType, body) {
-    this.logger.info("Uploading WordPress media", { fileName, mimeType, bytes: body.byteLength });
-    return this.requestBinary("/wp-json/wp/v2/media", "POST", body, {
-      "Content-Type": mimeType,
-      "Content-Disposition": `attachment; filename="${escapeHeaderValue(fileName)}"`
-    });
-  }
-  async getCategories() {
-    this.logger.info("Fetching WordPress categories");
-    return this.request("/wp-json/wp/v2/categories?per_page=100&hide_empty=false", "GET");
-  }
-  async createCategory(name, parent) {
-    this.logger.info("Creating WordPress category", { name, parent });
-    return this.request("/wp-json/wp/v2/categories", "POST", {
-      name,
-      ...parent ? { parent } : {}
-    });
-  }
-  async deleteCategory(categoryId) {
-    this.logger.info("Deleting WordPress category", { categoryId });
-    return this.request(`/wp-json/wp/v2/categories/${categoryId}?force=true`, "DELETE");
-  }
-  async resolveTerms(taxonomy, names) {
-    const ids = [];
-    for (const name of names) {
-      const existing = await this.findTerm(taxonomy, name);
-      if (existing) {
-        ids.push(existing.id);
-        continue;
-      }
-      const created = await this.createTerm(taxonomy, name);
-      ids.push(created.id);
-    }
-    return ids;
-  }
-  async findTerm(taxonomy, name) {
-    this.logger.info("Looking up WordPress taxonomy term", { taxonomy, name });
-    const terms = await this.request(`/wp-json/wp/v2/${taxonomy}?search=${encodeURIComponent(name)}`, "GET");
-    return terms.find((term) => term.name.toLowerCase() === name.toLowerCase());
-  }
-  async createTerm(taxonomy, name) {
-    this.logger.info("Creating WordPress taxonomy term", { taxonomy, name });
-    return this.request(`/wp-json/wp/v2/${taxonomy}`, "POST", { name });
-  }
-  async requestBinary(path, method, body, extraHeaders) {
-    return this.requestRaw(path, method, body, extraHeaders);
-  }
-  async request(path, method, body) {
-    const headers = {};
-    let requestBody;
-    if (body !== void 0) {
-      headers["Content-Type"] = "application/json";
-      requestBody = JSON.stringify(body);
-    }
-    return this.requestRaw(path, method, requestBody, headers);
-  }
-  async requestRaw(path, method, body, extraHeaders = {}) {
-    var _a;
-    const siteUrl = this.settings.siteUrl.replace(/\/$/, "");
-    const url = `${siteUrl}${path}`;
-    const headers = {
-      Authorization: `Basic ${btoa(`${this.settings.username}:${this.settings.applicationPassword}`)}`,
-      ...extraHeaders
-    };
-    const response = await (0, import_obsidian9.requestUrl)({
-      url,
-      method,
-      headers,
-      body,
-      throw: false
-    });
-    this.logger.info("WordPress REST response", {
-      url,
-      method,
-      status: response.status,
-      headers,
-      body: (_a = response.json) != null ? _a : response.text
-    });
-    if (response.status < 200 || response.status >= 300) {
-      const errorText = typeof response.text === "string" ? response.text : JSON.stringify(response.json);
-      throw new Error(`WordPress REST request failed: ${response.status} ${errorText}`);
-    }
-    return response.json;
-  }
-};
-function escapeHeaderValue(value) {
-  return value.replace(/["\r\n]/g, "_");
-}
-
 // src/publisher.ts
 var PublishService = class {
   constructor(app, settings, logger, persistSettings = async () => void 0) {
@@ -1668,7 +1931,7 @@ var PublishService = class {
     this.persistSettings = persistSettings;
     this.frontmatter = new FrontmatterService(app);
   }
-  async publishCurrentNote() {
+  async publishCurrentNote(options = {}) {
     this.assertSettingsReady();
     const file = this.app.workspace.getActiveFile();
     if (!file) {
@@ -1677,12 +1940,32 @@ var PublishService = class {
     if (file.extension !== "md") {
       throw new Error("The active file is not a Markdown note.");
     }
+    return this.publishFile(file, options);
+  }
+  async publishNoteByPath(path, options = {}) {
+    this.assertSettingsReady();
+    const file = this.app.vault.getAbstractFileByPath(path);
+    if (!(file instanceof import_obsidian10.TFile)) {
+      throw new Error(`Markdown note not found: ${path}`);
+    }
+    if (file.extension !== "md") {
+      throw new Error("The requested file is not a Markdown note.");
+    }
+    if (options.openBeforePublish) {
+      await this.app.workspace.getLeaf(false).openFile(file);
+    }
+    return this.publishFile(file, options);
+  }
+  async publishFile(file, options) {
     const metadata = this.frontmatter.read(file);
     if (!this.frontmatter.hasRequiredMapping(metadata)) {
+      if (options.allowInteractive === false) {
+        throw new Error("Missing required WordPress frontmatter: wp_title and wp_status are required. Enable interactive mode or add the fields before publishing.");
+      }
       await this.collectInitialMetadata(file);
-      return;
+      return void 0;
     }
-    await this.publishWithExistingMapping(file);
+    return this.publishWithExistingMapping(file, options);
   }
   async collectInitialMetadata(file) {
     const defaultTitle = file.basename;
@@ -1699,7 +1982,7 @@ var PublishService = class {
             showLogNotice("WordPress publish debug log", this.logger);
           }
         } catch (error) {
-          this.logger.error("Initial publish failed", serializeError3(error));
+          this.logger.error("Initial publish failed", serializeError4(error));
           new import_obsidian10.Notice(error instanceof Error ? error.message : "Publish failed", 1e4);
           showLogNotice("WordPress publish failed", this.logger);
         }
@@ -1720,21 +2003,22 @@ var PublishService = class {
         }
       };
     } catch (error) {
-      this.logger.warn("Could not load WordPress categories for publish modal", serializeError3(error));
+      this.logger.warn("Could not load WordPress categories for publish modal", serializeError4(error));
       return void 0;
     }
   }
-  async publishWithExistingMapping(file) {
+  async publishWithExistingMapping(file, options) {
     const metadata = this.frontmatter.read(file);
     const input = this.frontmatter.buildInputFromFrontmatter(metadata);
-    await this.publish(file, input);
+    if (options.status) input.status = options.status;
+    return this.publish(file, input, options);
   }
-  async publish(file, input) {
+  async publish(file, input, options = {}) {
     const rawContent = await this.app.vault.read(file);
     const markdownBody = stripFrontmatter(rawContent);
     const metadata = this.frontmatter.read(file);
     const client = new WordPressClient(this.settings, this.logger);
-    await this.ensureRemoteCanBeOverwritten(client, metadata.wp_post_id, metadata.wp_updated_at);
+    await this.ensureRemoteCanBeOverwritten(client, metadata.wp_post_id, metadata.wp_updated_at, options);
     const imageProcessor = new WordPressImageAssetProcessor(
       this.app,
       client,
@@ -1761,14 +2045,33 @@ var PublishService = class {
     };
     const response = await client.createOrUpdatePost(metadata.wp_post_id, payload);
     await this.frontmatter.writePublishResult(file, response);
-    new import_obsidian10.Notice(`Published to WordPress: ${response.link}`, 8e3);
+    if (options.showNotice !== false) {
+      new import_obsidian10.Notice(`Published to WordPress: ${response.link}`, 8e3);
+    }
     this.logger.info("Publish completed", response);
+    return {
+      postId: response.id,
+      url: response.link,
+      status: response.status,
+      notePath: file.path,
+      created: !metadata.wp_post_id,
+      updated: Boolean(metadata.wp_post_id),
+      publishedAt: response.date,
+      modifiedAt: response.modified
+    };
   }
-  async ensureRemoteCanBeOverwritten(client, postId, localUpdatedAt) {
+  async ensureRemoteCanBeOverwritten(client, postId, localUpdatedAt, options) {
     if (!postId || !localUpdatedAt) return;
     const remote = await client.getPost(postId);
     this.logger.info("Checked remote post before overwrite", { postId, localUpdatedAt, remoteModified: remote.modified });
     if (sameTimestamp(remote.modified, localUpdatedAt)) return;
+    if (options.overwriteRemoteChanges) {
+      this.logger.warn("Overwriting remotely modified WordPress post because overwriteRemoteChanges is enabled", { postId });
+      return;
+    }
+    if (options.allowInteractive === false) {
+      throw new Error("Remote WordPress post has changed since the last publish. Set overwriteRemoteChanges=true to overwrite it.");
+    }
     const decision = await confirmRemoteOverwrite(this.app, remote, localUpdatedAt);
     if (decision !== "overwrite") {
       throw new Error("Publish canceled because the remote WordPress post has changed.");
@@ -1784,7 +2087,7 @@ var PublishService = class {
     }
   }
 };
-function serializeError3(error) {
+function serializeError4(error) {
   if (error instanceof Error) {
     return { name: error.name, message: error.message, stack: error.stack };
   }
@@ -1809,18 +2112,11 @@ var RemotePostService = class {
     this.frontmatter = new FrontmatterService(app);
   }
   async showCurrentRemoteStatus() {
-    const { file, postId } = this.getActiveMappedPost();
-    const client = new WordPressClient(this.settings, this.logger);
-    const remote = await client.getPost(postId);
-    this.logger.info("Fetched remote WordPress post status", { file: file.path, remote });
+    const { remote } = await this.getRemoteStatus();
     new RemoteStatusModal(this.app, remote).open();
   }
   async unpublishCurrentPost() {
-    const { file, postId } = this.getActiveMappedPost();
-    const client = new WordPressClient(this.settings, this.logger);
-    const response = await client.updatePostStatus(postId, "draft");
-    await this.frontmatter.writePublishResult(file, response);
-    this.logger.info("Unpublished remote WordPress post", response);
+    const { response } = await this.unpublishPost();
     new import_obsidian11.Notice(`Moved WordPress post to draft: ${response.link}`, 8e3);
   }
   async deleteCurrentRemotePost() {
@@ -1837,10 +2133,45 @@ var RemotePostService = class {
     this.logger.info("Removed remote WordPress post", { decision, result });
     new import_obsidian11.Notice(decision === "delete" ? "WordPress post deleted permanently." : "WordPress post moved to trash.", 8e3);
   }
+  async getRemoteStatus(path) {
+    const { file, postId } = this.getMappedPost(path);
+    const client = new WordPressClient(this.settings, this.logger);
+    const remote = await client.getPost(postId);
+    this.logger.info("Fetched remote WordPress post status", { file: file.path, remote });
+    return { file, remote };
+  }
+  async unpublishPost(path) {
+    const { file, postId } = this.getMappedPost(path);
+    const client = new WordPressClient(this.settings, this.logger);
+    const response = await client.updatePostStatus(postId, "draft");
+    await this.frontmatter.writePublishResult(file, response);
+    this.logger.info("Unpublished remote WordPress post", { file: file.path, response });
+    return { file, response };
+  }
+  async deleteRemotePost(path, force) {
+    const { file, postId } = this.getMappedPost(path);
+    const client = new WordPressClient(this.settings, this.logger);
+    const result = await client.deletePost(postId, force);
+    await this.frontmatter.clearWordPressMapping(file);
+    this.logger.info("Removed remote WordPress post via API", { file: file.path, force, result });
+    return { file, result };
+  }
   getActiveMappedPost() {
+    return this.getMappedPost();
+  }
+  getMappedPost(path) {
+    if (path) {
+      const abstractFile = this.app.vault.getAbstractFileByPath(path);
+      if (!(abstractFile instanceof import_obsidian11.TFile)) throw new Error(`Markdown note not found: ${path}`);
+      if (abstractFile.extension !== "md") throw new Error("The requested file is not a Markdown note.");
+      return this.requirePostId(abstractFile);
+    }
     const file = this.app.workspace.getActiveFile();
     if (!file) throw new Error("No active note. Open a published Markdown note first.");
     if (file.extension !== "md") throw new Error("The active file is not a Markdown note.");
+    return this.requirePostId(file);
+  }
+  requirePostId(file) {
     const metadata = this.frontmatter.read(file);
     if (!metadata.wp_post_id) {
       throw new Error("This note does not have wp_post_id in frontmatter. Publish it before using remote post actions.");
@@ -1877,7 +2208,7 @@ var ElectronSafeStorageSecretStore = class {
     try {
       return this.safeStorage.decryptString(base64ToBuffer(encrypted));
     } catch (error) {
-      this.logger.warn("Failed to decrypt secret", { key, error: serializeError4(error) });
+      this.logger.warn("Failed to decrypt secret", { key, error: serializeError5(error) });
       return void 0;
     }
   }
@@ -1904,7 +2235,7 @@ function loadSafeStorage(logger) {
     const electron = require("electron");
     return (_b = electron.safeStorage) != null ? _b : (_a = electron.remote) == null ? void 0 : _a.safeStorage;
   } catch (error) {
-    logger.warn("Could not load Electron safeStorage", serializeError4(error));
+    logger.warn("Could not load Electron safeStorage", serializeError5(error));
     return void 0;
   }
 }
@@ -1921,7 +2252,7 @@ function base64ToBuffer(value) {
   }
   return bytes;
 }
-function serializeError4(error) {
+function serializeError5(error) {
   if (error instanceof Error) return { name: error.name, message: error.message, stack: error.stack };
   return error;
 }
@@ -1947,6 +2278,15 @@ var DEFAULT_SETTINGS = {
     publicBaseUrl: "",
     objectKeyRule: "obsidian/{yyyy}/{mm}/{postTitle}/{hash}-{fileName}",
     testReferer: ""
+  },
+  localApi: {
+    enabled: false,
+    port: 27187,
+    apiKeySaved: false,
+    apiKeySalt: "",
+    apiKeyHash: "",
+    allowInteractive: false,
+    allowDestructiveActions: false
   },
   encryptedSecrets: {},
   mediaCache: {}
@@ -2015,6 +2355,77 @@ var WordPressSettingTab = class extends import_obsidian12.PluginSettingTab {
       this.plugin.settings.debug = value;
       await this.plugin.saveSettings();
     }));
+    this.displayLocalApiSettings(containerEl);
+  }
+  displayLocalApiSettings(containerEl) {
+    containerEl.createEl("h3", { text: "Local API / MCP" });
+    containerEl.createEl("p", {
+      text: `Status: ${this.plugin.localApiStatus()}. The local API listens on 127.0.0.1 only and is intended for MCP clients such as Codex.`
+    });
+    const enableApiSetting = new import_obsidian12.Setting(containerEl).setName("Enable local API").setDesc("Allow a local MCP bridge to ask this Obsidian plugin to publish notes. Requires an API key.").addToggle((toggle) => toggle.setValue(this.plugin.settings.localApi.enabled).onChange(async (value) => {
+      if (value) {
+        const confirmed = await confirmDangerousSetting(
+          this.app,
+          "Enable local API?",
+          "This opens a localhost API that can publish notes through this Obsidian plugin when the caller has your API key."
+        );
+        if (!confirmed) {
+          toggle.setValue(false);
+          return;
+        }
+      }
+      this.plugin.settings.localApi.enabled = value;
+      await this.plugin.saveSettings();
+      await this.plugin.restartLocalApiServer();
+      this.display();
+    }));
+    markDangerSetting(enableApiSetting);
+    new import_obsidian12.Setting(containerEl).setName("API port").setDesc("Localhost port used by the Obsidian plugin API. Default: 27187.").addText((text) => text.setPlaceholder("27187").setValue(String(this.plugin.settings.localApi.port)).onChange(async (value) => {
+      const parsed = Number(value);
+      if (Number.isInteger(parsed) && parsed > 0 && parsed <= 65535) {
+        this.plugin.settings.localApi.port = parsed;
+        await this.plugin.saveSettings();
+        await this.plugin.restartLocalApiServer();
+      }
+    }));
+    new import_obsidian12.Setting(containerEl).setName("API key").setDesc(this.plugin.settings.localApi.apiKeySaved ? "An API key exists. It is never shown again. Generate a new key if you forgot it; the old key will stop working." : "No API key exists. Generate one before connecting an MCP client.").addButton((button) => button.setCta().setButtonText(this.plugin.settings.localApi.apiKeySaved ? "Regenerate" : "Generate").onClick(async () => {
+      const token = await this.plugin.generateLocalApiKey();
+      new ApiKeyModal(this.app, token).open();
+      await this.plugin.restartLocalApiServer();
+      this.display();
+    }));
+    const interactiveSetting = new import_obsidian12.Setting(containerEl).setName("Allow interactive Obsidian modals from API").setDesc("If enabled, API calls may open Obsidian modals for missing metadata or confirmations. Disabled is safer for automation.").addToggle((toggle) => toggle.setValue(this.plugin.settings.localApi.allowInteractive).onChange(async (value) => {
+      if (value) {
+        const confirmed = await confirmDangerousSetting(
+          this.app,
+          "Allow API-triggered Obsidian modals?",
+          "MCP/API calls may open publish dialogs, overwrite confirmations, and large upload confirmations in Obsidian. This can cause automation to wait for your manual action."
+        );
+        if (!confirmed) {
+          toggle.setValue(false);
+          return;
+        }
+      }
+      this.plugin.settings.localApi.allowInteractive = value;
+      await this.plugin.saveSettings();
+    }));
+    markDangerSetting(interactiveSetting);
+    const destructiveSetting = new import_obsidian12.Setting(containerEl).setName("Allow destructive API actions").setDesc("Reserved for future delete/unpublish MCP tools. Keep disabled unless you explicitly need remote deletion from MCP.").addToggle((toggle) => toggle.setValue(this.plugin.settings.localApi.allowDestructiveActions).onChange(async (value) => {
+      if (value) {
+        const confirmed = await confirmDangerousSetting(
+          this.app,
+          "Allow destructive API actions?",
+          "Future MCP/API tools may be allowed to unpublish or delete remote WordPress posts. Only enable this if you understand the risk."
+        );
+        if (!confirmed) {
+          toggle.setValue(false);
+          return;
+        }
+      }
+      this.plugin.settings.localApi.allowDestructiveActions = value;
+      await this.plugin.saveSettings();
+    }));
+    markDangerSetting(destructiveSetting);
   }
   displayAliyunOssSettings(containerEl) {
     let accessKeySecretInput = "";
@@ -2097,6 +2508,69 @@ var WordPressSettingTab = class extends import_obsidian12.PluginSettingTab {
     }
   }
 };
+var ApiKeyModal = class extends import_obsidian12.Modal {
+  constructor(app, token) {
+    super(app);
+    this.token = token;
+  }
+  onOpen() {
+    const { contentEl } = this;
+    contentEl.empty();
+    contentEl.createEl("h2", { text: "Local API key" });
+    contentEl.createEl("p", {
+      text: "Copy this API key now. It will not be shown again. If you lose it, generate a new key and the old key will be invalidated."
+    });
+    new import_obsidian12.Setting(contentEl).setName("API key").addText((text) => {
+      text.setValue(this.token);
+      text.inputEl.readOnly = true;
+      text.inputEl.select();
+    });
+    new import_obsidian12.Setting(contentEl).addButton((button) => button.setCta().setButtonText("Copy").onClick(async () => {
+      await navigator.clipboard.writeText(this.token);
+      new import_obsidian12.Notice("API key copied", 4e3);
+    })).addButton((button) => button.setButtonText("Close").onClick(() => this.close()));
+  }
+};
+function markDangerSetting(setting) {
+  setting.settingEl.style.borderLeft = "3px solid var(--text-error)";
+  setting.settingEl.style.paddingLeft = "12px";
+  setting.nameEl.style.color = "var(--text-error)";
+  setting.descEl.style.color = "var(--text-error)";
+}
+function confirmDangerousSetting(app, title, message) {
+  return new Promise((resolve) => {
+    new DangerousSettingConfirmModal(app, title, message, resolve).open();
+  });
+}
+var DangerousSettingConfirmModal = class extends import_obsidian12.Modal {
+  constructor(app, title, message, resolve) {
+    super(app);
+    this.title = title;
+    this.message = message;
+    this.resolve = resolve;
+  }
+  onOpen() {
+    const { contentEl } = this;
+    contentEl.empty();
+    contentEl.createEl("h2", { text: this.title }).style.color = "var(--text-error)";
+    contentEl.createEl("p", { text: this.message });
+    contentEl.createEl("p", {
+      text: "Confirm only if you trust the local MCP client and understand what this setting allows."
+    });
+    new import_obsidian12.Setting(contentEl).addButton((button) => button.setButtonText("Cancel").onClick(() => this.finish(false))).addButton((button) => {
+      button.setWarning().setButtonText("Enable").onClick(() => this.finish(true));
+    });
+  }
+  onClose() {
+    this.resolve(false);
+  }
+  finish(confirmed) {
+    const resolve = this.resolve;
+    this.resolve = () => void 0;
+    resolve(confirmed);
+    this.close();
+  }
+};
 
 // src/status-modal.ts
 var import_obsidian13 = require("obsidian");
@@ -2144,6 +2618,8 @@ var WordPressPublisherPlugin = class extends import_obsidian14.Plugin {
   async onload() {
     await this.loadSettings();
     this.addSettingTab(new WordPressSettingTab(this.app, this));
+    this.localApiServer = new LocalApiServer(this, this.logger);
+    await this.restartLocalApiServer();
     this.addCommand({
       id: "publish-current-note-to-wordpress",
       name: "Publish current note to WordPress",
@@ -2180,17 +2656,24 @@ var WordPressPublisherPlugin = class extends import_obsidian14.Plugin {
       }
     });
   }
+  async onunload() {
+    var _a;
+    await ((_a = this.localApiServer) == null ? void 0 : _a.stop());
+  }
   async loadSettings() {
-    var _a, _b, _c, _d;
+    var _a, _b, _c, _d, _e;
     this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
     this.settings.imageCompressionQuality = normalizeNumber(this.settings.imageCompressionQuality, 0.82, 0.1, 1);
     this.settings.largeImageThresholdMb = normalizeNumber(this.settings.largeImageThresholdMb, 2, 0, Number.MAX_SAFE_INTEGER);
     this.settings.mediaCache = (_a = this.settings.mediaCache) != null ? _a : {};
     this.settings.imageStorageProvider = (_b = this.settings.imageStorageProvider) != null ? _b : "wordpress";
     this.settings.aliyunOss = Object.assign({}, DEFAULT_SETTINGS.aliyunOss, (_c = this.settings.aliyunOss) != null ? _c : {});
-    this.settings.encryptedSecrets = (_d = this.settings.encryptedSecrets) != null ? _d : {};
+    this.settings.localApi = Object.assign({}, DEFAULT_SETTINGS.localApi, (_d = this.settings.localApi) != null ? _d : {});
+    this.settings.localApi.port = normalizeInteger(this.settings.localApi.port, DEFAULT_SETTINGS.localApi.port, 1, 65535);
+    this.settings.encryptedSecrets = (_e = this.settings.encryptedSecrets) != null ? _e : {};
     this.secretStore = new ElectronSafeStorageSecretStore(this.settings.encryptedSecrets, this.logger);
     this.settings.secretStoreStatus = this.secretStore.status();
+    await this.migrateLocalApiKeyStorage();
     await this.migratePlaintextSecrets();
   }
   async saveSettings() {
@@ -2221,6 +2704,88 @@ var WordPressPublisherPlugin = class extends import_obsidian14.Plugin {
     settings.aliyunOss.accessKeySecret = (_b = await this.secretStore.get("aliyun.accessKeySecret")) != null ? _b : "";
     return settings;
   }
+  async generateLocalApiKey() {
+    const token = generateApiToken();
+    const salt = generateApiToken();
+    this.settings.localApi.apiKeySalt = salt;
+    this.settings.localApi.apiKeyHash = await hashApiKey(token, salt);
+    this.settings.localApi.apiKeySaved = true;
+    await this.secretStore.delete("localApi.apiKey");
+    await this.saveSettings();
+    return token;
+  }
+  async verifyLocalApiKey(token) {
+    const { apiKeyHash, apiKeySalt } = this.settings.localApi;
+    if (!token || !apiKeyHash || !apiKeySalt) return false;
+    const actual = await hashApiKey(token, apiKeySalt);
+    return timingSafeEqual(actual, apiKeyHash);
+  }
+  async restartLocalApiServer() {
+    if (!this.localApiServer) return;
+    try {
+      await this.localApiServer.restart();
+    } catch (error) {
+      this.logger.error("Failed to start local API server", serializeError6(error));
+      new import_obsidian14.Notice(error instanceof Error ? `Local API failed: ${error.message}` : "Local API failed to start", 1e4);
+    }
+  }
+  localApiStatus() {
+    var _a;
+    if (!this.settings.localApi.enabled) return "disabled";
+    return ((_a = this.localApiServer) == null ? void 0 : _a.isRunning()) ? `running on 127.0.0.1:${this.localApiServer.getPort()}` : "stopped";
+  }
+  async publishCurrentNoteFromApi(options = {}) {
+    var _a, _b;
+    this.logger.clear();
+    const settings = await this.settingsWithSecrets();
+    const service = this.createPublishService(settings);
+    return service.publishCurrentNote({ ...options, allowInteractive: (_a = options.allowInteractive) != null ? _a : false, showNotice: (_b = options.showNotice) != null ? _b : false });
+  }
+  async publishNoteFromApi(path, options = {}) {
+    var _a, _b;
+    this.logger.clear();
+    const settings = await this.settingsWithSecrets();
+    const service = this.createPublishService(settings);
+    return service.publishNoteByPath(path, { ...options, allowInteractive: (_a = options.allowInteractive) != null ? _a : false, showNotice: (_b = options.showNotice) != null ? _b : false });
+  }
+  async getRemoteStatusFromApi(path) {
+    this.logger.clear();
+    const settings = await this.settingsWithSecrets();
+    const service = new RemotePostService(this.app, settings, this.logger);
+    const { remote } = await service.getRemoteStatus(path);
+    return remote;
+  }
+  async listPublishedPostsFromApi() {
+    this.logger.clear();
+    const settings = await this.settingsWithSecrets();
+    const service = new PublishedPostsService(this.app, settings, this.logger);
+    return service.listPublishedPosts();
+  }
+  async unpublishFromApi(path) {
+    this.assertDestructiveApiAllowed();
+    this.logger.clear();
+    const settings = await this.settingsWithSecrets();
+    const service = new RemotePostService(this.app, settings, this.logger);
+    const { response } = await service.unpublishPost(path);
+    return response;
+  }
+  async deleteRemotePostFromApi(path, force) {
+    this.assertDestructiveApiAllowed();
+    this.logger.clear();
+    const settings = await this.settingsWithSecrets();
+    const service = new RemotePostService(this.app, settings, this.logger);
+    const { result } = await service.deleteRemotePost(path, force);
+    return result;
+  }
+  async changePostStatusFromApi(path, status) {
+    this.logger.clear();
+    const file = path ? this.app.vault.getAbstractFileByPath(path) : this.app.workspace.getActiveFile();
+    if (!file) throw new Error(path ? `Markdown note not found: ${path}` : "No active note. Open a Markdown note first.");
+    if (!(file instanceof import_obsidian14.TFile) || file.extension !== "md") throw new Error("The requested file is not a Markdown note.");
+    const frontmatter = new FrontmatterService(this.app);
+    await frontmatter.writePostStatus(file, status);
+    return { path: file.path, status };
+  }
   async migratePlaintextSecrets() {
     let changed = false;
     if (this.settings.applicationPassword) {
@@ -2242,6 +2807,19 @@ var WordPressPublisherPlugin = class extends import_obsidian14.Plugin {
       } else {
         this.logger.warn("Plaintext Aliyun OSS AccessKey Secret was found but could not be migrated because secure storage is unavailable.");
       }
+    }
+    if (changed) await this.saveSettings();
+  }
+  async migrateLocalApiKeyStorage() {
+    let changed = false;
+    if (this.settings.encryptedSecrets["localApi.apiKey"]) {
+      await this.secretStore.delete("localApi.apiKey");
+      changed = true;
+    }
+    const hasApiKeyHash = Boolean(this.settings.localApi.apiKeyHash && this.settings.localApi.apiKeySalt);
+    if (this.settings.localApi.apiKeySaved !== hasApiKeyHash) {
+      this.settings.localApi.apiKeySaved = hasApiKeyHash;
+      changed = true;
     }
     if (changed) await this.saveSettings();
   }
@@ -2276,7 +2854,7 @@ var WordPressPublisherPlugin = class extends import_obsidian14.Plugin {
         showLogNotice(`${name} debug log`, this.logger);
       }
     } catch (error) {
-      this.logger.error(`${name} failed`, serializeError5(error));
+      this.logger.error(`${name} failed`, serializeError6(error));
       new import_obsidian14.Notice(error instanceof Error ? error.message : `${name} failed`, 1e4);
       showLogNotice(`${name} failed`, this.logger);
     }
@@ -2284,24 +2862,32 @@ var WordPressPublisherPlugin = class extends import_obsidian14.Plugin {
   async publishCurrentNote() {
     this.logger.clear();
     const settings = await this.settingsWithSecrets();
-    const service = new PublishService(this.app, settings, this.logger, async () => {
-      this.settings.mediaCache = settings.mediaCache;
-      this.settings.aliyunOss.endpoint = settings.aliyunOss.endpoint;
-      await this.saveSettings();
-    });
+    const service = this.createPublishService(settings);
     try {
       await service.publishCurrentNote();
       if (this.settings.debug) {
         showLogNotice("WordPress publish debug log", this.logger);
       }
     } catch (error) {
-      this.logger.error("Publish command failed", serializeError5(error));
+      this.logger.error("Publish command failed", serializeError6(error));
       new import_obsidian14.Notice(error instanceof Error ? error.message : "Publish failed", 1e4);
       showLogNotice("WordPress publish failed", this.logger);
     }
   }
+  createPublishService(settings) {
+    return new PublishService(this.app, settings, this.logger, async () => {
+      this.settings.mediaCache = settings.mediaCache;
+      this.settings.aliyunOss.endpoint = settings.aliyunOss.endpoint;
+      await this.saveSettings();
+    });
+  }
+  assertDestructiveApiAllowed() {
+    if (!this.settings.localApi.allowDestructiveActions) {
+      throw new Error("Destructive local API actions are disabled in plugin settings.");
+    }
+  }
 };
-function serializeError5(error) {
+function serializeError6(error) {
   if (error instanceof Error) {
     return { name: error.name, message: error.message, stack: error.stack };
   }
@@ -2310,4 +2896,28 @@ function serializeError5(error) {
 function normalizeNumber(value, fallback, min, max) {
   if (typeof value !== "number" || Number.isNaN(value)) return fallback;
   return Math.min(max, Math.max(min, value));
+}
+function normalizeInteger(value, fallback, min, max) {
+  return Math.round(normalizeNumber(value, fallback, min, max));
+}
+function generateApiToken() {
+  const bytes = new Uint8Array(32);
+  crypto.getRandomValues(bytes);
+  return Array.from(bytes).map((byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+async function hashApiKey(token, salt) {
+  if (!crypto.subtle) {
+    throw new Error("Web Crypto API is unavailable; cannot hash local API key.");
+  }
+  const bytes = new TextEncoder().encode(`${salt}:${token}`);
+  const digest = await crypto.subtle.digest("SHA-256", bytes);
+  return Array.from(new Uint8Array(digest)).map((byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+function timingSafeEqual(left, right) {
+  if (left.length !== right.length) return false;
+  let diff = 0;
+  for (let index = 0; index < left.length; index += 1) {
+    diff |= left.charCodeAt(index) ^ right.charCodeAt(index);
+  }
+  return diff === 0;
 }

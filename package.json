@@ -4,8 +4,10 @@
   "description": "Modular Obsidian plugin for publishing current notes to self-hosted WordPress via REST API.",
   "main": "main.js",
   "scripts": {
-    "build": "tsc -noEmit -skipLibCheck && esbuild src/main.ts --bundle --external:obsidian --format=cjs --target=es2018 --outfile=main.js",
-    "dev": "esbuild src/main.ts --bundle --external:obsidian --format=cjs --target=es2018 --outfile=main.js --watch"
+    "build": "tsc -noEmit -skipLibCheck && esbuild src/main.ts --bundle --external:obsidian --external:http --format=cjs --target=es2018 --outfile=main.js && esbuild src/mcp/server.ts --bundle --platform=node --format=cjs --target=node18 --outfile=dist/mcp-server.js",
+    "dev": "esbuild src/main.ts --bundle --external:obsidian --external:http --format=cjs --target=es2018 --outfile=main.js --watch",
+    "build:plugin": "tsc -noEmit -skipLibCheck && esbuild src/main.ts --bundle --external:obsidian --external:http --format=cjs --target=es2018 --outfile=main.js",
+    "build:mcp": "esbuild src/mcp/server.ts --bundle --platform=node --format=cjs --target=node18 --outfile=dist/mcp-server.js"
   },
   "keywords": [
     "obsidian",
@@ -20,5 +22,8 @@
     "esbuild": "^0.28.0",
     "obsidian": "^1.5.12",
     "typescript": "^5.4.2"
+  },
+  "bin": {
+    "obsidian-to-wordpress-mcp": "dist/mcp-server.js"
   }
 }

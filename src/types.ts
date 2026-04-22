@@ -11,6 +11,7 @@ export interface WordPressPluginSettings {
   largeImageThresholdMb: number;
   imageStorageProvider: ImageStorageProviderId;
   aliyunOss: AliyunOssSettings;
+  localApi: LocalApiSettings;
   encryptedSecrets: Record<string, string>;
   secretStoreStatus?: SecretStoreStatus;
   mediaCache: Record<string, MediaCacheEntry>;
@@ -34,6 +35,16 @@ export interface AliyunOssSettings {
   publicBaseUrl: string;
   objectKeyRule: string;
   testReferer: string;
+}
+
+export interface LocalApiSettings {
+  enabled: boolean;
+  port: number;
+  apiKeySaved: boolean;
+  apiKeySalt: string;
+  apiKeyHash: string;
+  allowInteractive: boolean;
+  allowDestructiveActions: boolean;
 }
 
 export interface MediaCacheEntry {
@@ -128,6 +139,48 @@ export interface Logger {
   error(message: string, details?: unknown): void;
   dump(): string;
   clear(): void;
+}
+
+export interface PublishOptions {
+  status?: WordPressPostStatus;
+  overwriteRemoteChanges?: boolean;
+  allowInteractive?: boolean;
+  showNotice?: boolean;
+  openBeforePublish?: boolean;
+  source?: "command" | "api";
+}
+
+export interface PublishResult {
+  postId: number;
+  url: string;
+  status: string;
+  notePath: string;
+  created: boolean;
+  updated: boolean;
+  publishedAt: string;
+  modifiedAt: string;
+}
+
+export interface PublishedPostStatusItem {
+  notePath: string;
+  postId: number;
+  localTitle?: string;
+  localStatus?: WordPressPostStatus;
+  localUrl?: string;
+  localUpdatedAt?: string;
+  remote?: PublishedPostRemoteSummary;
+  error?: string;
+}
+
+export interface PublishedPostRemoteSummary {
+  id: number;
+  status: string;
+  link: string;
+  date: string;
+  modified: string;
+  title?: string;
+  slug?: string;
+  type?: string;
 }
 
 export type RuntimeWordPressPluginSettings = WordPressPluginSettings & {
