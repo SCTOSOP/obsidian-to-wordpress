@@ -181,7 +181,7 @@ function explainOssError(status: number, parsed: ParsedOssError, settings: Aliyu
   }
 
   if (parsed.code === "SignatureDoesNotMatch") {
-    return "The OSS request signature did not match. This is usually caused by a wrong AccessKey Secret, wrong bucket/endpoint, system time drift, or an object-key signing mismatch. The full StringToSign is preserved in the debug log.";
+    return "The OSS request signature did not match. This is usually caused by a wrong AccessKey Secret, wrong bucket/endpoint, system time drift, or an object-key signing mismatch.";
   }
 
   if (parsed.code === "InvalidAccessKeyId") {
@@ -204,7 +204,7 @@ function explainOssError(status: number, parsed: ParsedOssError, settings: Aliyu
     return "OSS returned 403 Forbidden. This is usually caused by wrong credentials, missing RAM permissions, wrong endpoint region, or bucket policy restrictions.";
   }
 
-  return "Aliyun OSS returned an error response. See the details below and the full debug log for the raw XML.";
+  return "Aliyun OSS returned an error response. See the details below for the raw error summary.";
 }
 
 function parseOssError(rawText: string): ParsedOssError {

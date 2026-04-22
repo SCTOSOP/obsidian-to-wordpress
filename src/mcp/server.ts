@@ -16,6 +16,9 @@ const apiKey = process.env.OTW_API_KEY || "";
 const logPath = process.env.OTW_MCP_LOG_PATH || "/tmp/obsidian-to-wordpress-mcp.log";
 let buffer = Buffer.alloc(0);
 let outputFraming: "headers" | "lines" = "headers";
+let mcpDebug = process.env.OTW_MCP_DEBUG === "1";
+
+void refreshDebugConfig();
 
 logDebug("process_started", {
   pid: process.pid,
@@ -129,7 +132,7 @@ async function handleMessage(request: JsonRpcRequest): Promise<void> {
       writeResult(request.id, {
         protocolVersion: params.protocolVersion ?? "2024-11-05",
         capabilities: { tools: { listChanged: false } },
-        serverInfo: { name: "obsidian-to-wordpress", version: "1.0.0-beta.1" },
+        serverInfo: { name: "obsidian-to-wordpress", version: "1.1.0-beta" },
       });
       return;
     }
@@ -198,6 +201,7 @@ async function handleMessage(request: JsonRpcRequest): Promise<void> {
 }
 
 async function callTool(name: string, args: Record<string, unknown>): Promise<unknown> {
+  await refreshDebugConfig();
   logDebug("tool_call", { name, args: redactToolArgs(args) });
   if (name === "obsidian_wordpress_health") {
     return requestApi("GET", "/health");
@@ -293,6 +297,30 @@ async function requestApi(method: "GET" | "POST", path: string, body?: Record<st
   return parsed;
 }
 
+async function refreshDebugConfig(): Promise<void> {
+  try {
+    const response = await fetch(`${apiBaseUrl}/health`, {
+      method: "GET",
+      headers: { accept: "application/json" },
+    });
+    const parsed = await response.json() as { data?: { debug?: boolean } };
+    const nextDebug = Boolean(parsed.data?.debug);
+    const wasDebug = mcpDebug;
+    mcpDebug = nextDebug || process.env.OTW_MCP_DEBUG === "1";
+    if (!wasDebug && mcpDebug) {
+      logDebug("debug_enabled_from_plugin", {
+        pid: process.pid,
+        node: process.version,
+        cwd: process.cwd(),
+        apiBaseUrl,
+        hasApiKey: Boolean(apiKey),
+      });
+    }
+  } catch (error) {
+    logDebug("debug_config_unavailable", { error: serializeError(error) });
+  }
+}
+
 function publishSchema(withPath: boolean): JsonValue {
   const properties: Record<string, JsonValue> = {
     status: { type: "string", enum: ["draft", "publish", "private", "pending"], description: "Override the note wp_status for this publish." },
@@ -364,6 +392,7 @@ function writeMessage(message: unknown): void {
 }
 
 function logDebug(event: string, details?: unknown): void {
+  if (!mcpDebug) return;
   try {
     appendFileSync(logPath, `${new Date().toISOString()} ${event}${details === undefined ? "" : ` ${safeJson(details)}`}\n`);
   } catch (_error) {

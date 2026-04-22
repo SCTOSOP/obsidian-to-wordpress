@@ -6,7 +6,7 @@
 
 ## 发布状态
 
-当前版本目标：`1.0.0-beta.1`。
+当前版本目标：`1.1.0-beta`。
 
 这是一个早期测试版本，重点是验证完整发布链路、安全存储和常用内容渲染。后续功能会逐步补齐。
 
@@ -25,7 +25,9 @@
 - 支持在发布界面删除 WordPress 分类。
 - 发布后把 WordPress 文章 ID、URL、发布时间、更新时间写回笔记 frontmatter。
 - 提供插件设置页，用于配置站点地址、用户名、Application Password、默认发布状态、调试模式等。
-- 调试模式开启时，每次上传后显示完整日志；关闭时仅在失败时显示日志。
+- 推送失败时会在 Obsidian 中弹窗显示本次错误日志。
+- 只有开启调试模式时，插件和 MCP 才会写入详细日志文件。
+- 调试模式位于设置页最下方，开启后可一键复制日志文件路径。
 - 发布前上传本地图片，并把文章中的本地图片链接替换为远端 URL。
 - 图片存储提供方支持 WordPress 媒体库和阿里云 OSS。
 - 支持 Obsidian 图片嵌入语法，例如 `![[image.png]]`。
@@ -35,7 +37,7 @@
 - 复用缓存前会检查远端媒体 URL；如果返回 `404` 或 `410` 等资源缺失状态，会重新上传。
 - 支持自定义阿里云 OSS 对象路径规则，例如 `{postTitle}/{fileName}`。
 - 设置页提供阿里云 OSS 测试上传按钮，方便排查 OSS 配置问题。
-- 对常见阿里云 OSS XML 错误提供更友好的解释，同时保留完整原始响应用于调试。
+- 对常见阿里云 OSS XML 错误提供更友好的解释。
 - 自动移除 Obsidian 渲染出的 `referrerpolicy="no-referrer"`，让 OSS/CDN 防盗链可以收到博客页面的 Referer。
 - 写入文章前会移除阿里云 OSS `Public base URL` 中的 query/hash，避免临时签名参数进入正文。
 - 能识别阿里云 OSS endpoint 地域不匹配错误，并询问是否自动切换到推荐 endpoint。
@@ -63,7 +65,7 @@
 
 - `main.js`
 - `manifest.json`
-- 或 `obsidian-to-wordpress-1.0.0-beta.1.zip`
+- 或 `obsidian-to-wordpress-1.1.0-beta.zip`
 
 把插件放入你的库：
 
@@ -94,7 +96,7 @@
 - `Username`：WordPress 用户名。
 - `Application Password`：WordPress Application Password。
 - `Default status`：默认发布状态，例如 `draft` 或 `publish`。
-- `Debug mode`：开启后上传时显示完整日志。
+- `Debug mode`：设置页最下方的黄色警示项；开启后把详细插件日志与 MCP 日志写入文件，并显示复制日志路径按钮。Obsidian 只在推送失败时弹窗显示本次错误日志。
 - `Image storage provider`：选择 WordPress 媒体库或阿里云 OSS。
 - `Image compression quality`：图片压缩质量。
 - `Large image threshold`：大文件提醒阈值。
@@ -278,7 +280,8 @@ JS);
 
 - 该方案保护的是本地插件数据文件中的静态密钥。
 - 该方案不能防御同一系统用户下运行的恶意软件、恶意 Obsidian 插件，或运行时内存读取。
-- 调试日志会尽量脱敏常见密钥字段和签名 URL 参数，但仍不建议随意公开完整日志。
+- 调试日志只会在开启 `Debug mode` 时写入文件；推送失败弹窗即使未开启调试模式也会显示本次错误日志。
+- 日志会尽量脱敏常见密钥字段和签名 URL 参数，但仍不建议随意公开完整日志。
 
 如果旧版本设置中存在明文密钥，插件会在安全存储可用时迁移到加密存储，并移除明文字段。
 
@@ -383,7 +386,7 @@ docs/interfaces.md
 - API key 在插件设置中自动生成，并且只显示一次。如果忘记，只能重新生成；旧 key 会立即失效。
 - API key 明文本身不会写入插件数据文件。插件只保存 salted SHA-256 hash 和 salt，用于请求校验。
 - API 触发 Obsidian 交互弹窗默认关闭。
-- 删除等破坏性 API 行为预留独立开关，第一版 MCP 工具不会默认启用。
+- 删除等破坏性 API 行为由独立开关控制，默认关闭。
 
 启用方式：
 

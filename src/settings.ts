@@ -3,7 +3,7 @@ import { confirmEndpointSwitch } from "./endpoint-switch-modal";
 import { createImageStorageProvider, createTestImageUploadInput } from "./storage/image-storage-provider";
 import { AliyunOssEndpointMismatchError } from "./storage/aliyun-oss-provider";
 import { HttpMediaUrlChecker } from "./media-url-checker";
-import { PublishLogger, showLogNotice } from "./logger";
+import { PublishLogger, showErrorLogModal } from "./logger";
 import type WordPressPublisherPlugin from "./main";
 import type { WordPressPluginSettings } from "./types";
 
@@ -168,17 +168,41 @@ export class WordPressSettingTab extends PluginSettingTab {
       this.displayAliyunOssSettings(containerEl);
     }
 
-    new Setting(containerEl)
+    this.displayLocalApiSettings(containerEl);
+    this.displayDebugSettings(containerEl);
+  }
+
+  private displayDebugSettings(containerEl: HTMLElement): void {
+    containerEl.createEl("h3", { text: "Debug" });
+    const pluginLogPath = this.plugin.getPluginLogPath();
+    const mcpLogPath = "/tmp/obsidian-to-wordpress-mcp.log";
+
+    const debugSetting = new Setting(containerEl)
       .setName("Debug mode")
-      .setDesc("When enabled, show full publish logs after every upload. Otherwise logs are shown only on failure.")
+      .setDesc("When enabled, write detailed plugin and MCP logs to files. Obsidian only shows error logs when an operation fails.")
       .addToggle((toggle) => toggle
         .setValue(this.plugin.settings.debug)
         .onChange(async (value) => {
           this.plugin.settings.debug = value;
           await this.plugin.saveSettings();
+          this.display();
         }));
 
-    this.displayLocalApiSettings(containerEl);
+    if (this.plugin.settings.debug) {
+      debugSetting
+        .addButton((button) => button
+          .setButtonText("Copy log paths")
+          .onClick(async () => {
+            const value = [
+              `Plugin log: ${pluginLogPath || "(unavailable in this Obsidian adapter)"}`,
+              `MCP log: ${mcpLogPath}`,
+            ].join("\n");
+            await navigator.clipboard.writeText(value);
+            new Notice("Log paths copied", 4000);
+          }));
+    }
+
+    markWarningSetting(debugSetting);
   }
 
   private displayLocalApiSettings(containerEl: HTMLElement): void {
@@ -391,7 +415,10 @@ export class WordPressSettingTab extends PluginSettingTab {
   }
 
   private async runOssUploadTest(): Promise<void> {
-    const logger = new PublishLogger();
+    const logger = new PublishLogger({
+      debug: this.plugin.settings.debug,
+      logPath: this.plugin.getPluginLogPath(),
+    });
     try {
       const settings = await this.plugin.settingsWithSecrets();
       const provider = createImageStorageProvider(settings, undefined, logger);
@@ -403,8 +430,9 @@ export class WordPressSettingTab extends PluginSettingTab {
       logger.info("OSS test URL check completed", { url: result.url, status, referer: settings.aliyunOss.testReferer });
 
       new Notice(`OSS test upload ${status === "missing" ? "uploaded but URL is not accessible" : "completed"}: ${result.url}`, 12000);
-      if (this.plugin.settings.debug || status !== "available") {
-        showLogNotice("OSS test upload log", logger);
+      if (status !== "available") {
+        logger.error("OSS test upload URL is not accessible", { url: result.url, status });
+        showErrorLogModal(this.app, "OSS test upload failed", logger);
       }
     } catch (error) {
       if (error instanceof AliyunOssEndpointMismatchError) {
@@ -421,13 +449,12 @@ export class WordPressSettingTab extends PluginSettingTab {
         } else {
           new Notice(error.message, 10000);
         }
-        showLogNotice("OSS test upload failed", logger);
+        showErrorLogModal(this.app, "OSS test upload failed", logger, error);
         return;
       }
 
       logger.error("OSS test upload failed", error instanceof Error ? { message: error.message, stack: error.stack } : error);
-      new Notice(error instanceof Error ? error.message : "OSS test upload failed", 10000);
-      showLogNotice("OSS test upload failed", logger);
+      showErrorLogModal(this.app, "OSS test upload failed", logger, error);
     }
   }
 }
@@ -472,6 +499,13 @@ function markDangerSetting(setting: Setting): void {
   setting.settingEl.style.paddingLeft = "12px";
   setting.nameEl.style.color = "var(--text-error)";
   setting.descEl.style.color = "var(--text-error)";
+}
+
+function markWarningSetting(setting: Setting): void {
+  setting.settingEl.style.borderLeft = "3px solid var(--text-warning)";
+  setting.settingEl.style.paddingLeft = "12px";
+  setting.nameEl.style.color = "var(--text-warning)";
+  setting.descEl.style.color = "var(--text-warning)";
 }
 
 function confirmDangerousSetting(app: App, title: string, message: string): Promise<boolean> {

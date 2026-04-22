@@ -6,7 +6,7 @@ Obsidian plugin for publishing the current note to a self-hosted WordPress site 
 
 ## Release Status
 
-Current release target: `1.0.0-beta.1`. This beta is intended for early testing; features will continue to be added incrementally.
+Current release target: `1.1.0-beta`. This beta is intended for early testing; features will continue to be added incrementally.
 
 ## Supported
 
@@ -22,7 +22,9 @@ Current release target: `1.0.0-beta.1`. This beta is intended for early testing;
 - Supports adding WordPress categories with an optional parent category, and deleting categories from the first-publish modal.
 - Writes WordPress ID, URL, publish time, and update time back to note frontmatter.
 - Provides a plugin settings tab for site URL, username, Application Password, default status, and debug mode.
-- Shows full logs after each upload when debug mode is enabled; otherwise shows logs only on failures.
+- Shows an Obsidian error-log modal whenever publishing fails.
+- Writes detailed plugin and MCP logs to files only when debug mode is enabled.
+- Places debug mode at the bottom of settings and provides a copy button for log file paths when enabled.
 - Uploads local images to the selected image storage provider before publishing.
 - Supports WordPress Media Library and Aliyun OSS as image storage providers.
 - Converts Obsidian image embeds like `![[image.png]]` to WordPress media URLs.
@@ -32,7 +34,7 @@ Current release target: `1.0.0-beta.1`. This beta is intended for early testing;
 - Checks cached media URLs before reuse; missing media such as `404` or `410` is re-uploaded.
 - Supports custom Aliyun OSS object key rules such as `{postTitle}/{fileName}`.
 - Provides an Aliyun OSS test-upload button in settings for configuration diagnosis.
-- Converts common Aliyun OSS XML errors into friendlier user-facing explanations while keeping the full raw response in logs.
+- Converts common Aliyun OSS XML errors into friendlier user-facing explanations.
 - Removes Obsidian-rendered `referrerpolicy="no-referrer"` from image tags so OSS/CDN hotlink protection can receive the blog Referer.
 - Strips query/hash from Aliyun OSS `Public base URL` before writing image URLs, avoiding temporary signed URL parameters in posts.
 - Detects Aliyun OSS endpoint mismatch responses and asks whether to switch to the recommended endpoint automatically.
@@ -112,7 +114,7 @@ Move items from this section into `Supported` when they are implemented.
 - Add local-to-remote and remote-to-local sync workflows.
 - Add conflict resolution strategies.
 - Encrypt or otherwise protect stored Application Passwords beyond plain plugin data storage.
-- Redact secrets from debug logs.
+- Improve log retention and rotation controls.
 - Add retry and timeout controls for network failures.
 - Check WordPress user permissions before publishing.
 
@@ -327,7 +329,8 @@ Security boundaries:
 
 - This protects secrets at rest in the local plugin data file.
 - This does not protect against malware running as the same OS user, malicious Obsidian plugins, or memory inspection while the plugin is running.
-- Debug logs redact common secret fields and signed URL parameters, but avoid sharing logs unless necessary.
+- Debug logs are written only when debug mode is enabled. Error-log modals are shown for failed publish operations even when debug mode is disabled.
+- Logs redact common secret fields and signed URL parameters, but avoid sharing logs unless necessary.
 
 Migration:
 
@@ -346,7 +349,7 @@ Security defaults:
 - The API key is generated in plugin settings and shown only once. If you forget it, generate a new key; the old key is invalidated.
 - The API key itself is never stored in plugin data. Only a salted SHA-256 hash and salt are saved for verification.
 - Interactive Obsidian modals from API calls are disabled by default.
-- Destructive API actions are reserved behind a separate setting and are not enabled by the first MCP tools.
+- Destructive API actions are behind a separate setting and are disabled by default.
 
 Plugin settings:
 

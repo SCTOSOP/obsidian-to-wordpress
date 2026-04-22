@@ -463,7 +463,7 @@ Settings:
 - `username`: WordPress username.
 - `applicationPasswordSaved`: whether the WordPress Application Password exists in encrypted secret storage.
 - `defaultStatus`: default status for first publish.
-- `debug`: if true, show full logs after every upload; otherwise show logs only on failure.
+- `debug`: if true, write detailed plugin/MCP logs to files. Publish failures always show a per-run error-log modal in Obsidian.
 
 ### `src/secret-store.ts`
 
@@ -496,20 +496,20 @@ Security boundary:
 
 ### `src/logger.ts`
 
-In-memory publish logger.
+Per-operation logger with optional debug file output.
 
 Public API:
 
 ```ts
 class PublishLogger implements Logger
-function showLogNotice(title: string, logger: Logger): void
+function showErrorLogModal(app: App, title: string, logger: Logger, error?: unknown): void
 ```
 
 Future extension points:
 
-- Replace `Notice` with a dedicated log panel.
-- Persist logs to a local file.
-- Redact secrets in debug output.
+- Add log retention and rotation controls.
+- Add a dedicated diagnostics viewer.
+- Expand structured redaction rules as new integrations are added.
 
 ## Publish Sequence
 

@@ -111,6 +111,7 @@ export class LocalApiServer {
           vault: this.plugin.app.vault.getName(),
           apiEnabled: this.plugin.settings.localApi.enabled,
           apiRunning: this.isRunning(),
+          debug: this.plugin.getDebugConfig().debug,
         },
       });
       return;
@@ -161,7 +162,7 @@ export class LocalApiServer {
     if (url.pathname === "/post-status" && request.method === "POST") {
       const body = await readJson<PathBody>(request);
       const remote = await this.plugin.getRemoteStatusFromApi(body.path);
-      sendJson(response, 200, { ok: true, data: remote, logs: this.logger.dump() });
+      sendJson(response, 200, { ok: true, data: remote });
       return;
     }
 
@@ -176,7 +177,7 @@ export class LocalApiServer {
       }
       const body = await readJson<PathBody>(request);
       const remote = await this.plugin.unpublishFromApi(body.path);
-      sendJson(response, 200, { ok: true, data: remote, logs: this.logger.dump() });
+      sendJson(response, 200, { ok: true, data: remote });
       return;
     }
 
@@ -191,7 +192,7 @@ export class LocalApiServer {
       }
       const body = await readJson<DeletePostBody>(request);
       const result = await this.plugin.deleteRemotePostFromApi(body.path, Boolean(body.force));
-      sendJson(response, 200, { ok: true, data: result, logs: this.logger.dump() });
+      sendJson(response, 200, { ok: true, data: result });
       return;
     }
 
@@ -202,7 +203,7 @@ export class LocalApiServer {
         return;
       }
       const result = await this.plugin.changePostStatusFromApi(body.path, body.status);
-      sendJson(response, 200, { ok: true, data: result, logs: this.logger.dump() });
+      sendJson(response, 200, { ok: true, data: result });
       return;
     }
 
@@ -224,11 +225,10 @@ export class LocalApiServer {
       sendJson(response, 202, {
         ok: true,
         data: { interactive: true, message: "Interactive Obsidian publish flow was opened." },
-        logs: this.logger.dump(),
       });
       return;
     }
-    sendJson(response, 200, { ok: true, data: result, logs: this.logger.dump() });
+    sendJson(response, 200, { ok: true, data: result });
   }
 }
 

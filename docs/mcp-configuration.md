@@ -93,7 +93,9 @@ examples/mcp.config.json
 
 ## MCP Bridge Logs
 
-The MCP bridge writes diagnostics to a file instead of Obsidian or stderr/stdout, because MCP uses stdio as its protocol transport.
+The MCP bridge never writes diagnostics to stderr/stdout, because MCP uses stdio as its protocol transport.
+
+MCP file logging follows the plugin `Debug mode` setting after the bridge can reach Obsidian's local API. When debug mode is disabled, the MCP bridge does not write a log file.
 
 Default log file:
 
@@ -109,6 +111,15 @@ OTW_MCP_LOG_PATH = "/tmp/obsidian-to-wordpress-mcp.log"
 ```
 
 The log records startup, JSON-RPC framing, tool calls, and local API response status. It does not write the API key.
+
+If MCP startup itself is failing before the bridge can read the plugin debug setting, temporarily add:
+
+```toml
+[mcp_servers.obsidian-to-wordpress.env]
+OTW_MCP_DEBUG = "1"
+```
+
+Remove `OTW_MCP_DEBUG` after diagnosis if you want the plugin setting to be the only logging control.
 
 ## Available MCP Tools
 

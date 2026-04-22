@@ -1,7 +1,7 @@
 import { Notice, Plugin, TFile } from "obsidian";
 import { LocalApiServer } from "./api/local-api-server";
 import { FrontmatterService } from "./frontmatter";
-import { showLogNotice, PublishLogger } from "./logger";
+import { showErrorLogModal, PublishLogger } from "./logger";
 import { PublishedPostsService } from "./published-posts-service";
 import { PublishService } from "./publisher";
 import { RemotePostService } from "./remote-post-service";
@@ -77,6 +77,7 @@ export default class WordPressPublisherPlugin extends Plugin {
     this.settings.localApi = Object.assign({}, DEFAULT_SETTINGS.localApi, this.settings.localApi ?? {});
     this.settings.localApi.port = normalizeInteger(this.settings.localApi.port, DEFAULT_SETTINGS.localApi.port, 1, 65535);
     this.settings.encryptedSecrets = this.settings.encryptedSecrets ?? {};
+    this.configureLogger();
     this.secretStore = new ElectronSafeStorageSecretStore(this.settings.encryptedSecrets, this.logger);
     this.settings.secretStoreStatus = this.secretStore.status();
     await this.migrateLocalApiKeyStorage();
@@ -85,6 +86,27 @@ export default class WordPressPublisherPlugin extends Plugin {
 
   async saveSettings(): Promise<void> {
     await this.saveData(this.settings);
+    this.configureLogger();
+  }
+
+  configureLogger(): void {
+    this.logger.configure({
+      debug: this.settings.debug,
+      logPath: this.getPluginLogPath(),
+    });
+  }
+
+  getPluginLogPath(): string {
+    const adapter = this.app.vault.adapter as { basePath?: string };
+    if (!adapter.basePath) return "";
+    return `${adapter.basePath}/.obsidian/plugins/${this.manifest.id}/logs/plugin.log`;
+  }
+
+  getDebugConfig(): { debug: boolean; pluginLogPath: string } {
+    return {
+      debug: this.settings.debug,
+      pluginLogPath: this.getPluginLogPath(),
+    };
   }
 
   async setSecret(key: SecretKey, value: string): Promise<void> {
@@ -147,21 +169,33 @@ export default class WordPressPublisherPlugin extends Plugin {
   }
 
   async publishCurrentNoteFromApi(options: PublishOptions = {}): Promise<PublishResult | undefined> {
-    this.logger.clear();
-    const settings = await this.settingsWithSecrets();
-    const service = this.createPublishService(settings);
-    return service.publishCurrentNote({ ...options, allowInteractive: options.allowInteractive ?? false, showNotice: options.showNotice ?? false });
+    this.prepareLogSession();
+    try {
+      const settings = await this.settingsWithSecrets();
+      const service = this.createPublishService(settings);
+      return await service.publishCurrentNote({ ...options, allowInteractive: options.allowInteractive ?? false, showNotice: options.showNotice ?? false });
+    } catch (error) {
+      this.logger.error("API publish current note failed", serializeError(error));
+      showErrorLogModal(this.app, "WordPress publish failed", this.logger, error);
+      throw error;
+    }
   }
 
   async publishNoteFromApi(path: string, options: PublishOptions = {}): Promise<PublishResult | undefined> {
-    this.logger.clear();
-    const settings = await this.settingsWithSecrets();
-    const service = this.createPublishService(settings);
-    return service.publishNoteByPath(path, { ...options, allowInteractive: options.allowInteractive ?? false, showNotice: options.showNotice ?? false });
+    this.prepareLogSession();
+    try {
+      const settings = await this.settingsWithSecrets();
+      const service = this.createPublishService(settings);
+      return await service.publishNoteByPath(path, { ...options, allowInteractive: options.allowInteractive ?? false, showNotice: options.showNotice ?? false });
+    } catch (error) {
+      this.logger.error("API publish note failed", { path, error: serializeError(error) });
+      showErrorLogModal(this.app, "WordPress publish failed", this.logger, error);
+      throw error;
+    }
   }
 
   async getRemoteStatusFromApi(path?: string): Promise<WordPressPostResponse> {
-    this.logger.clear();
+    this.prepareLogSession();
     const settings = await this.settingsWithSecrets();
     const service = new RemotePostService(this.app, settings, this.logger);
     const { remote } = await service.getRemoteStatus(path);
@@ -169,7 +203,7 @@ export default class WordPressPublisherPlugin extends Plugin {
   }
 
   async listPublishedPostsFromApi(): Promise<PublishedPostStatusItem[]> {
-    this.logger.clear();
+    this.prepareLogSession();
     const settings = await this.settingsWithSecrets();
     const service = new PublishedPostsService(this.app, settings, this.logger);
     return service.listPublishedPosts();
@@ -177,7 +211,7 @@ export default class WordPressPublisherPlugin extends Plugin {
 
   async unpublishFromApi(path?: string): Promise<WordPressPostResponse> {
     this.assertDestructiveApiAllowed();
-    this.logger.clear();
+    this.prepareLogSession();
     const settings = await this.settingsWithSecrets();
     const service = new RemotePostService(this.app, settings, this.logger);
     const { response } = await service.unpublishPost(path);
@@ -186,7 +220,7 @@ export default class WordPressPublisherPlugin extends Plugin {
 
   async deleteRemotePostFromApi(path: string | undefined, force: boolean): Promise<WordPressDeleteResponse> {
     this.assertDestructiveApiAllowed();
-    this.logger.clear();
+    this.prepareLogSession();
     const settings = await this.settingsWithSecrets();
     const service = new RemotePostService(this.app, settings, this.logger);
     const { result } = await service.deleteRemotePost(path, force);
@@ -194,7 +228,7 @@ export default class WordPressPublisherPlugin extends Plugin {
   }
 
   async changePostStatusFromApi(path: string | undefined, status: WordPressPostStatus): Promise<{ path: string; status: WordPressPostStatus }> {
-    this.logger.clear();
+    this.prepareLogSession();
     const file = path ? this.app.vault.getAbstractFileByPath(path) : this.app.workspace.getActiveFile();
     if (!file) throw new Error(path ? `Markdown note not found: ${path}` : "No active note. Open a Markdown note first.");
     if (!(file instanceof TFile) || file.extension !== "md") throw new Error("The requested file is not a Markdown note.");
@@ -267,37 +301,34 @@ export default class WordPressPublisherPlugin extends Plugin {
   }
 
   private async runRemoteAction(name: string, action: (service: RemotePostService) => Promise<void>): Promise<void> {
-    this.logger.clear();
+    this.prepareLogSession();
     const settings = await this.settingsWithSecrets();
     const service = new RemotePostService(this.app, settings, this.logger);
 
     try {
       await action(service);
-      if (this.settings.debug) {
-        showLogNotice(`${name} debug log`, this.logger);
-      }
     } catch (error) {
       this.logger.error(`${name} failed`, serializeError(error));
-      new Notice(error instanceof Error ? error.message : `${name} failed`, 10000);
-      showLogNotice(`${name} failed`, this.logger);
+      showErrorLogModal(this.app, `${name} failed`, this.logger, error);
     }
   }
 
   private async publishCurrentNote(): Promise<void> {
-    this.logger.clear();
+    this.prepareLogSession();
     const settings = await this.settingsWithSecrets();
     const service = this.createPublishService(settings);
 
     try {
       await service.publishCurrentNote();
-      if (this.settings.debug) {
-        showLogNotice("WordPress publish debug log", this.logger);
-      }
     } catch (error) {
       this.logger.error("Publish command failed", serializeError(error));
-      new Notice(error instanceof Error ? error.message : "Publish failed", 10000);
-      showLogNotice("WordPress publish failed", this.logger);
+      showErrorLogModal(this.app, "WordPress publish failed", this.logger, error);
     }
+  }
+
+  private prepareLogSession(): void {
+    this.configureLogger();
+    this.logger.clear();
   }
 
   private createPublishService(settings: WordPressPluginSettings): PublishService {

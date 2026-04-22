@@ -96,7 +96,8 @@ var LocalApiServer = class {
           version: this.plugin.manifest.version,
           vault: this.plugin.app.vault.getName(),
           apiEnabled: this.plugin.settings.localApi.enabled,
-          apiRunning: this.isRunning()
+          apiRunning: this.isRunning(),
+          debug: this.plugin.getDebugConfig().debug
         }
       });
       return;
@@ -142,7 +143,7 @@ var LocalApiServer = class {
     if (url.pathname === "/post-status" && request.method === "POST") {
       const body = await readJson(request);
       const remote = await this.plugin.getRemoteStatusFromApi(body.path);
-      sendJson(response, 200, { ok: true, data: remote, logs: this.logger.dump() });
+      sendJson(response, 200, { ok: true, data: remote });
       return;
     }
     if (url.pathname === "/unpublish" && request.method === "POST") {
@@ -156,7 +157,7 @@ var LocalApiServer = class {
       }
       const body = await readJson(request);
       const remote = await this.plugin.unpublishFromApi(body.path);
-      sendJson(response, 200, { ok: true, data: remote, logs: this.logger.dump() });
+      sendJson(response, 200, { ok: true, data: remote });
       return;
     }
     if (url.pathname === "/delete-post" && request.method === "POST") {
@@ -170,7 +171,7 @@ var LocalApiServer = class {
       }
       const body = await readJson(request);
       const result = await this.plugin.deleteRemotePostFromApi(body.path, Boolean(body.force));
-      sendJson(response, 200, { ok: true, data: result, logs: this.logger.dump() });
+      sendJson(response, 200, { ok: true, data: result });
       return;
     }
     if (url.pathname === "/change-status" && request.method === "POST") {
@@ -180,7 +181,7 @@ var LocalApiServer = class {
         return;
       }
       const result = await this.plugin.changePostStatusFromApi(body.path, body.status);
-      sendJson(response, 200, { ok: true, data: result, logs: this.logger.dump() });
+      sendJson(response, 200, { ok: true, data: result });
       return;
     }
     sendJson(response, 404, { ok: false, errorCode: "NOT_FOUND", message: "Local API endpoint not found." });
@@ -198,12 +199,11 @@ var LocalApiServer = class {
     if (!result) {
       sendJson(response, 202, {
         ok: true,
-        data: { interactive: true, message: "Interactive Obsidian publish flow was opened." },
-        logs: this.logger.dump()
+        data: { interactive: true, message: "Interactive Obsidian publish flow was opened." }
       });
       return;
     }
-    sendJson(response, 200, { ok: true, data: result, logs: this.logger.dump() });
+    sendJson(response, 200, { ok: true, data: result });
   }
 };
 function loadHttp() {
@@ -332,8 +332,16 @@ function emptyToUndefined(value) {
 // src/logger.ts
 var import_obsidian = require("obsidian");
 var PublishLogger = class {
-  constructor() {
+  constructor(options = {}) {
     this.entries = [];
+    this.debug = false;
+    this.logPath = "";
+    this.configure(options);
+  }
+  configure(options) {
+    var _a;
+    this.debug = Boolean(options.debug);
+    this.logPath = (_a = options.logPath) != null ? _a : this.logPath;
   }
   info(message, details) {
     this.push("info", message, details);
@@ -345,6 +353,7 @@ var PublishLogger = class {
     this.push("error", message, details);
   }
   dump() {
+    if (this.entries.length === 0) return "No log entries were recorded for this operation.";
     return this.entries.map((entry) => {
       const details = entry.details === void 0 ? "" : `
 ${safeStringify(entry.details)}`;
@@ -355,14 +364,62 @@ ${safeStringify(entry.details)}`;
     this.entries = [];
   }
   push(level, message, details) {
-    this.entries.push({ level, message, details, time: (/* @__PURE__ */ new Date()).toISOString() });
+    const entry = { level, message, details, time: (/* @__PURE__ */ new Date()).toISOString() };
+    this.entries.push(entry);
+    if (this.debug) this.appendToFile(entry);
+  }
+  appendToFile(entry) {
+    if (!this.logPath) return;
+    try {
+      const fs = loadFs();
+      if (!fs) return;
+      const path = loadPath();
+      if (!path) return;
+      fs.mkdirSync(path.dirname(this.logPath), { recursive: true });
+      const details = entry.details === void 0 ? "" : ` ${safeStringify(entry.details)}`;
+      fs.appendFileSync(this.logPath, `[${entry.time}] ${entry.level.toUpperCase()} ${entry.message}${details}
+`, "utf8");
+    } catch (_error) {
+    }
   }
 };
-function showLogNotice(title, logger) {
-  new import_obsidian.Notice(`${title}
-
-${logger.dump()}`, 15e3);
+function showErrorLogModal(app, title, logger, error) {
+  new ErrorLogModal(app, title, buildErrorReport(title, logger, error)).open();
 }
+function buildErrorReport(title, logger, error) {
+  const explicitError = error === void 0 ? "" : `
+
+Thrown error:
+${safeStringify(serializeError2(error))}`;
+  return `${title}
+
+${logger.dump()}${explicitError}`;
+}
+var ErrorLogModal = class extends import_obsidian.Modal {
+  constructor(app, titleText, report) {
+    super(app);
+    this.titleText = titleText;
+    this.report = report;
+  }
+  onOpen() {
+    const { contentEl } = this;
+    contentEl.empty();
+    contentEl.createEl("h2", { text: this.titleText });
+    contentEl.createEl("p", {
+      text: "The operation failed. The error log below is for this run only."
+    });
+    const pre = contentEl.createEl("pre");
+    pre.style.maxHeight = "55vh";
+    pre.style.overflow = "auto";
+    pre.style.whiteSpace = "pre-wrap";
+    pre.style.userSelect = "text";
+    pre.setText(this.report);
+    new import_obsidian.Setting(contentEl).addButton((button) => button.setButtonText("Copy error log").onClick(async () => {
+      await navigator.clipboard.writeText(this.report);
+      new import_obsidian.Notice("Error log copied", 4e3);
+    })).addButton((button) => button.setCta().setButtonText("Close").onClick(() => this.close()));
+  }
+};
 function safeStringify(value) {
   try {
     return JSON.stringify(redactSecrets(value), null, 2);
@@ -384,7 +441,23 @@ function isSecretKey(key) {
   return /authorization|password|secret|token|signature|accesskeyid|ossaccesskeyid/i.test(key);
 }
 function redactSecretText(value) {
-  return value.replace(/(Authorization:\s*)[^\n]+/gi, "$1[REDACTED]").replace(/(OSSAccessKeyId=)[^&\s]+/gi, "$1[REDACTED]").replace(/(Signature=)[^&\s]+/gi, "$1[REDACTED]").replace(/(AccessKeyId>)[^<]+/gi, "$1[REDACTED]").replace(/(SignatureProvided>)[^<]+/gi, "$1[REDACTED]");
+  const redacted = value.replace(/(Authorization:\s*)[^\n]+/gi, "$1[REDACTED]").replace(/(Authorization\":\s*\")[^\"]+/gi, "$1[REDACTED]").replace(/(OSSAccessKeyId=)[^&\s]+/gi, "$1[REDACTED]").replace(/(Signature=)[^&\s]+/gi, "$1[REDACTED]").replace(/(Expires=)[^&\s]+/gi, "$1[REDACTED]").replace(/(AccessKeyId>)[^<]+/gi, "$1[REDACTED]").replace(/(SignatureProvided>)[^<]+/gi, "$1[REDACTED]");
+  return redacted.length > 2e3 ? `${redacted.slice(0, 2e3)}
+...[truncated ${redacted.length - 2e3} chars]` : redacted;
+}
+function serializeError2(error) {
+  if (error instanceof Error) {
+    return { name: error.name, message: error.message, stack: error.stack };
+  }
+  return error;
+}
+function loadFs() {
+  if (typeof require !== "function") return void 0;
+  return require("fs");
+}
+function loadPath() {
+  if (typeof require !== "function") return void 0;
+  return require("path");
 }
 
 // src/wordpress-client.ts
@@ -636,7 +709,7 @@ var BrowserImageCompressor = class {
       });
       return prepared;
     } catch (error) {
-      this.logger.warn("Image compression failed; uploading original image", serializeError2(error));
+      this.logger.warn("Image compression failed; uploading original image", serializeError3(error));
       return this.original(file, body, mimeType, "Compression failed");
     }
   }
@@ -677,7 +750,7 @@ function extensionForMimeType(mimeType) {
 function replaceExtension(fileName, extension) {
   return fileName.replace(/\.[^.]+$/, `.${extension}`);
 }
-function serializeError2(error) {
+function serializeError3(error) {
   if (error instanceof Error) {
     return { name: error.name, message: error.message, stack: error.stack };
   }
@@ -710,7 +783,7 @@ var HttpMediaUrlChecker = class {
       this.logger.info("Cached media GET check completed", { url, status: get.status, result: getStatus });
       return getStatus;
     } catch (error) {
-      this.logger.warn("Cached media URL check failed due to network or client error", serializeError3(error));
+      this.logger.warn("Cached media URL check failed due to network or client error", serializeError4(error));
       return "unknown";
     }
   }
@@ -720,7 +793,7 @@ function classifyStatus(status) {
   if (status === 404 || status === 410) return "missing";
   return "unknown";
 }
-function serializeError3(error) {
+function serializeError4(error) {
   if (error instanceof Error) {
     return { name: error.name, message: error.message, stack: error.stack };
   }
@@ -912,7 +985,7 @@ function explainOssError(status, parsed, settings) {
     return `The bucket is in a different region than your configured endpoint. Change OSS endpoint from ${settings.endpoint || "(empty)"} to https://${parsed.endpoint}.`;
   }
   if (parsed.code === "SignatureDoesNotMatch") {
-    return "The OSS request signature did not match. This is usually caused by a wrong AccessKey Secret, wrong bucket/endpoint, system time drift, or an object-key signing mismatch. The full StringToSign is preserved in the debug log.";
+    return "The OSS request signature did not match. This is usually caused by a wrong AccessKey Secret, wrong bucket/endpoint, system time drift, or an object-key signing mismatch.";
   }
   if (parsed.code === "InvalidAccessKeyId") {
     return "The AccessKey ID is invalid or disabled. Check the configured AccessKey ID.";
@@ -929,7 +1002,7 @@ function explainOssError(status, parsed, settings) {
   if (status === 403) {
     return "OSS returned 403 Forbidden. This is usually caused by wrong credentials, missing RAM permissions, wrong endpoint region, or bucket policy restrictions.";
   }
-  return "Aliyun OSS returned an error response. See the details below and the full debug log for the raw XML.";
+  return "Aliyun OSS returned an error response. See the details below for the raw error summary.";
 }
 function parseOssError(rawText) {
   return {
@@ -1978,13 +2051,9 @@ var PublishService = class {
           this.logger.info("Saving initial WordPress frontmatter mapping", input);
           await this.frontmatter.writeInitialMapping(file, input);
           await this.publish(file, input);
-          if (this.settings.debug) {
-            showLogNotice("WordPress publish debug log", this.logger);
-          }
         } catch (error) {
-          this.logger.error("Initial publish failed", serializeError4(error));
-          new import_obsidian10.Notice(error instanceof Error ? error.message : "Publish failed", 1e4);
-          showLogNotice("WordPress publish failed", this.logger);
+          this.logger.error("Initial publish failed", serializeError5(error));
+          showErrorLogModal(this.app, "WordPress publish failed", this.logger, error);
         }
       },
       categoryActions
@@ -2003,7 +2072,7 @@ var PublishService = class {
         }
       };
     } catch (error) {
-      this.logger.warn("Could not load WordPress categories for publish modal", serializeError4(error));
+      this.logger.warn("Could not load WordPress categories for publish modal", serializeError5(error));
       return void 0;
     }
   }
@@ -2087,7 +2156,7 @@ var PublishService = class {
     }
   }
 };
-function serializeError4(error) {
+function serializeError5(error) {
   if (error instanceof Error) {
     return { name: error.name, message: error.message, stack: error.stack };
   }
@@ -2208,7 +2277,7 @@ var ElectronSafeStorageSecretStore = class {
     try {
       return this.safeStorage.decryptString(base64ToBuffer(encrypted));
     } catch (error) {
-      this.logger.warn("Failed to decrypt secret", { key, error: serializeError5(error) });
+      this.logger.warn("Failed to decrypt secret", { key, error: serializeError6(error) });
       return void 0;
     }
   }
@@ -2235,7 +2304,7 @@ function loadSafeStorage(logger) {
     const electron = require("electron");
     return (_b = electron.safeStorage) != null ? _b : (_a = electron.remote) == null ? void 0 : _a.safeStorage;
   } catch (error) {
-    logger.warn("Could not load Electron safeStorage", serializeError5(error));
+    logger.warn("Could not load Electron safeStorage", serializeError6(error));
     return void 0;
   }
 }
@@ -2252,7 +2321,7 @@ function base64ToBuffer(value) {
   }
   return bytes;
 }
-function serializeError5(error) {
+function serializeError6(error) {
   if (error instanceof Error) return { name: error.name, message: error.message, stack: error.stack };
   return error;
 }
@@ -2351,11 +2420,29 @@ var WordPressSettingTab = class extends import_obsidian12.PluginSettingTab {
     if (this.plugin.settings.imageStorageProvider === "aliyun-oss") {
       this.displayAliyunOssSettings(containerEl);
     }
-    new import_obsidian12.Setting(containerEl).setName("Debug mode").setDesc("When enabled, show full publish logs after every upload. Otherwise logs are shown only on failure.").addToggle((toggle) => toggle.setValue(this.plugin.settings.debug).onChange(async (value) => {
+    this.displayLocalApiSettings(containerEl);
+    this.displayDebugSettings(containerEl);
+  }
+  displayDebugSettings(containerEl) {
+    containerEl.createEl("h3", { text: "Debug" });
+    const pluginLogPath = this.plugin.getPluginLogPath();
+    const mcpLogPath = "/tmp/obsidian-to-wordpress-mcp.log";
+    const debugSetting = new import_obsidian12.Setting(containerEl).setName("Debug mode").setDesc("When enabled, write detailed plugin and MCP logs to files. Obsidian only shows error logs when an operation fails.").addToggle((toggle) => toggle.setValue(this.plugin.settings.debug).onChange(async (value) => {
       this.plugin.settings.debug = value;
       await this.plugin.saveSettings();
+      this.display();
     }));
-    this.displayLocalApiSettings(containerEl);
+    if (this.plugin.settings.debug) {
+      debugSetting.addButton((button) => button.setButtonText("Copy log paths").onClick(async () => {
+        const value = [
+          `Plugin log: ${pluginLogPath || "(unavailable in this Obsidian adapter)"}`,
+          `MCP log: ${mcpLogPath}`
+        ].join("\n");
+        await navigator.clipboard.writeText(value);
+        new import_obsidian12.Notice("Log paths copied", 4e3);
+      }));
+    }
+    markWarningSetting(debugSetting);
   }
   displayLocalApiSettings(containerEl) {
     containerEl.createEl("h3", { text: "Local API / MCP" });
@@ -2471,7 +2558,10 @@ var WordPressSettingTab = class extends import_obsidian12.PluginSettingTab {
     }));
   }
   async runOssUploadTest() {
-    const logger = new PublishLogger();
+    const logger = new PublishLogger({
+      debug: this.plugin.settings.debug,
+      logPath: this.plugin.getPluginLogPath()
+    });
     try {
       const settings = await this.plugin.settingsWithSecrets();
       const provider = createImageStorageProvider(settings, void 0, logger);
@@ -2481,8 +2571,9 @@ var WordPressSettingTab = class extends import_obsidian12.PluginSettingTab {
       const status = await checker.check(result.url, settings.aliyunOss.testReferer || void 0);
       logger.info("OSS test URL check completed", { url: result.url, status, referer: settings.aliyunOss.testReferer });
       new import_obsidian12.Notice(`OSS test upload ${status === "missing" ? "uploaded but URL is not accessible" : "completed"}: ${result.url}`, 12e3);
-      if (this.plugin.settings.debug || status !== "available") {
-        showLogNotice("OSS test upload log", logger);
+      if (status !== "available") {
+        logger.error("OSS test upload URL is not accessible", { url: result.url, status });
+        showErrorLogModal(this.app, "OSS test upload failed", logger);
       }
     } catch (error) {
       if (error instanceof AliyunOssEndpointMismatchError) {
@@ -2499,12 +2590,11 @@ var WordPressSettingTab = class extends import_obsidian12.PluginSettingTab {
         } else {
           new import_obsidian12.Notice(error.message, 1e4);
         }
-        showLogNotice("OSS test upload failed", logger);
+        showErrorLogModal(this.app, "OSS test upload failed", logger, error);
         return;
       }
       logger.error("OSS test upload failed", error instanceof Error ? { message: error.message, stack: error.stack } : error);
-      new import_obsidian12.Notice(error instanceof Error ? error.message : "OSS test upload failed", 1e4);
-      showLogNotice("OSS test upload failed", logger);
+      showErrorLogModal(this.app, "OSS test upload failed", logger, error);
     }
   }
 };
@@ -2536,6 +2626,12 @@ function markDangerSetting(setting) {
   setting.settingEl.style.paddingLeft = "12px";
   setting.nameEl.style.color = "var(--text-error)";
   setting.descEl.style.color = "var(--text-error)";
+}
+function markWarningSetting(setting) {
+  setting.settingEl.style.borderLeft = "3px solid var(--text-warning)";
+  setting.settingEl.style.paddingLeft = "12px";
+  setting.nameEl.style.color = "var(--text-warning)";
+  setting.descEl.style.color = "var(--text-warning)";
 }
 function confirmDangerousSetting(app, title, message) {
   return new Promise((resolve) => {
@@ -2671,6 +2767,7 @@ var WordPressPublisherPlugin = class extends import_obsidian14.Plugin {
     this.settings.localApi = Object.assign({}, DEFAULT_SETTINGS.localApi, (_d = this.settings.localApi) != null ? _d : {});
     this.settings.localApi.port = normalizeInteger(this.settings.localApi.port, DEFAULT_SETTINGS.localApi.port, 1, 65535);
     this.settings.encryptedSecrets = (_e = this.settings.encryptedSecrets) != null ? _e : {};
+    this.configureLogger();
     this.secretStore = new ElectronSafeStorageSecretStore(this.settings.encryptedSecrets, this.logger);
     this.settings.secretStoreStatus = this.secretStore.status();
     await this.migrateLocalApiKeyStorage();
@@ -2678,6 +2775,24 @@ var WordPressPublisherPlugin = class extends import_obsidian14.Plugin {
   }
   async saveSettings() {
     await this.saveData(this.settings);
+    this.configureLogger();
+  }
+  configureLogger() {
+    this.logger.configure({
+      debug: this.settings.debug,
+      logPath: this.getPluginLogPath()
+    });
+  }
+  getPluginLogPath() {
+    const adapter = this.app.vault.adapter;
+    if (!adapter.basePath) return "";
+    return `${adapter.basePath}/.obsidian/plugins/${this.manifest.id}/logs/plugin.log`;
+  }
+  getDebugConfig() {
+    return {
+      debug: this.settings.debug,
+      pluginLogPath: this.getPluginLogPath()
+    };
   }
   async setSecret(key, value) {
     var _a;
@@ -2725,7 +2840,7 @@ var WordPressPublisherPlugin = class extends import_obsidian14.Plugin {
     try {
       await this.localApiServer.restart();
     } catch (error) {
-      this.logger.error("Failed to start local API server", serializeError6(error));
+      this.logger.error("Failed to start local API server", serializeError7(error));
       new import_obsidian14.Notice(error instanceof Error ? `Local API failed: ${error.message}` : "Local API failed to start", 1e4);
     }
   }
@@ -2736,34 +2851,46 @@ var WordPressPublisherPlugin = class extends import_obsidian14.Plugin {
   }
   async publishCurrentNoteFromApi(options = {}) {
     var _a, _b;
-    this.logger.clear();
-    const settings = await this.settingsWithSecrets();
-    const service = this.createPublishService(settings);
-    return service.publishCurrentNote({ ...options, allowInteractive: (_a = options.allowInteractive) != null ? _a : false, showNotice: (_b = options.showNotice) != null ? _b : false });
+    this.prepareLogSession();
+    try {
+      const settings = await this.settingsWithSecrets();
+      const service = this.createPublishService(settings);
+      return await service.publishCurrentNote({ ...options, allowInteractive: (_a = options.allowInteractive) != null ? _a : false, showNotice: (_b = options.showNotice) != null ? _b : false });
+    } catch (error) {
+      this.logger.error("API publish current note failed", serializeError7(error));
+      showErrorLogModal(this.app, "WordPress publish failed", this.logger, error);
+      throw error;
+    }
   }
   async publishNoteFromApi(path, options = {}) {
     var _a, _b;
-    this.logger.clear();
-    const settings = await this.settingsWithSecrets();
-    const service = this.createPublishService(settings);
-    return service.publishNoteByPath(path, { ...options, allowInteractive: (_a = options.allowInteractive) != null ? _a : false, showNotice: (_b = options.showNotice) != null ? _b : false });
+    this.prepareLogSession();
+    try {
+      const settings = await this.settingsWithSecrets();
+      const service = this.createPublishService(settings);
+      return await service.publishNoteByPath(path, { ...options, allowInteractive: (_a = options.allowInteractive) != null ? _a : false, showNotice: (_b = options.showNotice) != null ? _b : false });
+    } catch (error) {
+      this.logger.error("API publish note failed", { path, error: serializeError7(error) });
+      showErrorLogModal(this.app, "WordPress publish failed", this.logger, error);
+      throw error;
+    }
   }
   async getRemoteStatusFromApi(path) {
-    this.logger.clear();
+    this.prepareLogSession();
     const settings = await this.settingsWithSecrets();
     const service = new RemotePostService(this.app, settings, this.logger);
     const { remote } = await service.getRemoteStatus(path);
     return remote;
   }
   async listPublishedPostsFromApi() {
-    this.logger.clear();
+    this.prepareLogSession();
     const settings = await this.settingsWithSecrets();
     const service = new PublishedPostsService(this.app, settings, this.logger);
     return service.listPublishedPosts();
   }
   async unpublishFromApi(path) {
     this.assertDestructiveApiAllowed();
-    this.logger.clear();
+    this.prepareLogSession();
     const settings = await this.settingsWithSecrets();
     const service = new RemotePostService(this.app, settings, this.logger);
     const { response } = await service.unpublishPost(path);
@@ -2771,14 +2898,14 @@ var WordPressPublisherPlugin = class extends import_obsidian14.Plugin {
   }
   async deleteRemotePostFromApi(path, force) {
     this.assertDestructiveApiAllowed();
-    this.logger.clear();
+    this.prepareLogSession();
     const settings = await this.settingsWithSecrets();
     const service = new RemotePostService(this.app, settings, this.logger);
     const { result } = await service.deleteRemotePost(path, force);
     return result;
   }
   async changePostStatusFromApi(path, status) {
-    this.logger.clear();
+    this.prepareLogSession();
     const file = path ? this.app.vault.getAbstractFileByPath(path) : this.app.workspace.getActiveFile();
     if (!file) throw new Error(path ? `Markdown note not found: ${path}` : "No active note. Open a Markdown note first.");
     if (!(file instanceof import_obsidian14.TFile) || file.extension !== "md") throw new Error("The requested file is not a Markdown note.");
@@ -2845,34 +2972,30 @@ var WordPressPublisherPlugin = class extends import_obsidian14.Plugin {
     }
   }
   async runRemoteAction(name, action) {
-    this.logger.clear();
+    this.prepareLogSession();
     const settings = await this.settingsWithSecrets();
     const service = new RemotePostService(this.app, settings, this.logger);
     try {
       await action(service);
-      if (this.settings.debug) {
-        showLogNotice(`${name} debug log`, this.logger);
-      }
     } catch (error) {
-      this.logger.error(`${name} failed`, serializeError6(error));
-      new import_obsidian14.Notice(error instanceof Error ? error.message : `${name} failed`, 1e4);
-      showLogNotice(`${name} failed`, this.logger);
+      this.logger.error(`${name} failed`, serializeError7(error));
+      showErrorLogModal(this.app, `${name} failed`, this.logger, error);
     }
   }
   async publishCurrentNote() {
-    this.logger.clear();
+    this.prepareLogSession();
     const settings = await this.settingsWithSecrets();
     const service = this.createPublishService(settings);
     try {
       await service.publishCurrentNote();
-      if (this.settings.debug) {
-        showLogNotice("WordPress publish debug log", this.logger);
-      }
     } catch (error) {
-      this.logger.error("Publish command failed", serializeError6(error));
-      new import_obsidian14.Notice(error instanceof Error ? error.message : "Publish failed", 1e4);
-      showLogNotice("WordPress publish failed", this.logger);
+      this.logger.error("Publish command failed", serializeError7(error));
+      showErrorLogModal(this.app, "WordPress publish failed", this.logger, error);
     }
+  }
+  prepareLogSession() {
+    this.configureLogger();
+    this.logger.clear();
   }
   createPublishService(settings) {
     return new PublishService(this.app, settings, this.logger, async () => {
@@ -2887,7 +3010,7 @@ var WordPressPublisherPlugin = class extends import_obsidian14.Plugin {
     }
   }
 };
-function serializeError6(error) {
+function serializeError7(error) {
   if (error instanceof Error) {
     return { name: error.name, message: error.message, stack: error.stack };
   }

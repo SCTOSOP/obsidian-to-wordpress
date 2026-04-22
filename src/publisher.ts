@@ -1,5 +1,5 @@
 import { App, Notice, TFile } from "obsidian";
-import { showLogNotice } from "./logger";
+import { showErrorLogModal } from "./logger";
 import { FrontmatterService, stripFrontmatter } from "./frontmatter";
 import { WordPressImageAssetProcessor } from "./image-assets";
 import { ObsidianMarkdownConverter } from "./markdown-converter";
@@ -76,13 +76,9 @@ export class PublishService {
           this.logger.info("Saving initial WordPress frontmatter mapping", input);
           await this.frontmatter.writeInitialMapping(file, input);
           await this.publish(file, input);
-          if (this.settings.debug) {
-            showLogNotice("WordPress publish debug log", this.logger);
-          }
         } catch (error) {
           this.logger.error("Initial publish failed", serializeError(error));
-          new Notice(error instanceof Error ? error.message : "Publish failed", 10000);
-          showLogNotice("WordPress publish failed", this.logger);
+          showErrorLogModal(this.app, "WordPress publish failed", this.logger, error);
         }
       },
       categoryActions,
