@@ -2,6 +2,7 @@ import { Notice, Plugin, TFile } from "obsidian";
 import { LocalApiServer } from "./api/local-api-server";
 import { FrontmatterService } from "./frontmatter";
 import { showErrorLogModal, PublishLogger } from "./logger";
+import { JsonlMediaCacheStore, type MediaCacheStore } from "./media-cache-store";
 import { PublishedPostsService } from "./published-posts-service";
 import { PublishService } from "./publisher";
 import { RemotePostService } from "./remote-post-service";
@@ -14,6 +15,7 @@ export default class WordPressPublisherPlugin extends Plugin {
   settings: WordPressPluginSettings = DEFAULT_SETTINGS;
   private logger = new PublishLogger();
   secretStore!: SecretStore;
+  private mediaCacheStore!: MediaCacheStore;
   private localApiServer?: LocalApiServer;
 
   async onload(): Promise<void> {
@@ -82,6 +84,8 @@ export default class WordPressPublisherPlugin extends Plugin {
     this.settings.secretStoreStatus = this.secretStore.status();
     await this.migrateLocalApiKeyStorage();
     await this.migratePlaintextSecrets();
+    this.mediaCacheStore = new JsonlMediaCacheStore(this.getMediaCachePath(), this.logger);
+    await this.migrateMediaCacheStorage();
   }
 
   async saveSettings(): Promise<void> {
@@ -97,9 +101,20 @@ export default class WordPressPublisherPlugin extends Plugin {
   }
 
   getPluginLogPath(): string {
+    const basePath = this.getVaultBasePath();
+    if (!basePath) return "";
+    return `${basePath}/.obsidian/plugins/${this.manifest.id}/logs/plugin.log`;
+  }
+
+  getMediaCachePath(): string {
+    const basePath = this.getVaultBasePath();
+    if (!basePath) return "";
+    return `${basePath}/.obsidian/plugins/${this.manifest.id}/media-cache.jsonl`;
+  }
+
+  private getVaultBasePath(): string {
     const adapter = this.app.vault.adapter as { basePath?: string };
-    if (!adapter.basePath) return "";
-    return `${adapter.basePath}/.obsidian/plugins/${this.manifest.id}/logs/plugin.log`;
+    return adapter.basePath ?? "";
   }
 
   getDebugConfig(): { debug: boolean; pluginLogPath: string } {
@@ -276,6 +291,17 @@ export default class WordPressPublisherPlugin extends Plugin {
     if (changed) await this.saveSettings();
   }
 
+  private async migrateMediaCacheStorage(): Promise<void> {
+    const oldCache = this.settings.mediaCache ?? {};
+    if (Object.keys(oldCache).length === 0) return;
+
+    const migrated = await this.mediaCacheStore.migrateFromSettingsCache(oldCache);
+    if (migrated > 0) {
+      this.settings.mediaCache = {};
+      await this.saveSettings();
+    }
+  }
+
   private markSecretSaved(key: SecretKey, saved: boolean): void {
     if (key === "wordpress.applicationPassword") this.settings.applicationPasswordSaved = saved;
     if (key === "aliyun.accessKeySecret") this.settings.aliyunOss.accessKeySecretSaved = saved;
@@ -332,8 +358,7 @@ export default class WordPressPublisherPlugin extends Plugin {
   }
 
   private createPublishService(settings: WordPressPluginSettings): PublishService {
-    return new PublishService(this.app, settings, this.logger, async () => {
-      this.settings.mediaCache = settings.mediaCache;
+    return new PublishService(this.app, settings, this.logger, this.mediaCacheStore, async () => {
       this.settings.aliyunOss.endpoint = settings.aliyunOss.endpoint;
       await this.saveSettings();
     });

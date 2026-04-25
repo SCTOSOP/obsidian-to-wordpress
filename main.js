@@ -460,6 +460,107 @@ function loadPath() {
   return require("path");
 }
 
+// src/media-cache-store.ts
+var JsonlMediaCacheStore = class {
+  constructor(filePath, logger) {
+    this.filePath = filePath;
+    this.logger = logger;
+    this.entries = /* @__PURE__ */ new Map();
+    this.loaded = false;
+  }
+  async get(vaultPath) {
+    await this.ensureLoaded();
+    return this.entries.get(vaultPath);
+  }
+  async set(entry) {
+    await this.ensureLoaded();
+    this.entries.set(entry.vaultPath, entry);
+    await this.append({ op: "upsert", key: entry.vaultPath, value: entry, time: (/* @__PURE__ */ new Date()).toISOString() });
+  }
+  async delete(vaultPath) {
+    await this.ensureLoaded();
+    this.entries.delete(vaultPath);
+    await this.append({ op: "delete", key: vaultPath, time: (/* @__PURE__ */ new Date()).toISOString() });
+  }
+  async list() {
+    await this.ensureLoaded();
+    return Array.from(this.entries.values());
+  }
+  async migrateFromSettingsCache(cache) {
+    await this.ensureLoaded();
+    const entries = Object.entries(cache != null ? cache : {});
+    if (entries.length === 0) return 0;
+    for (const [key, entry] of entries) {
+      if (!(entry == null ? void 0 : entry.vaultPath) || !entry.url) continue;
+      const normalized = { ...entry, vaultPath: entry.vaultPath || key };
+      this.entries.set(normalized.vaultPath, normalized);
+    }
+    await this.compact();
+    this.logger.info("Migrated media cache from plugin settings to JSONL store", { count: entries.length, filePath: this.filePath });
+    return entries.length;
+  }
+  async ensureLoaded() {
+    if (this.loaded) return;
+    this.loaded = true;
+    const fs = loadFs2();
+    if (!fs.existsSync(this.filePath)) return;
+    const raw = fs.readFileSync(this.filePath, "utf8");
+    for (const [index, line] of raw.split(/\r?\n/).entries()) {
+      if (!line.trim()) continue;
+      try {
+        this.apply(JSON.parse(line));
+      } catch (error) {
+        this.logger.warn("Skipped invalid media cache JSONL line", {
+          filePath: this.filePath,
+          line: index + 1,
+          error: serializeError3(error)
+        });
+      }
+    }
+    this.logger.info("Loaded media cache JSONL store", { filePath: this.filePath, count: this.entries.size });
+  }
+  apply(operation) {
+    if (operation.op === "upsert") {
+      this.entries.set(operation.key, operation.value);
+      return;
+    }
+    if (operation.op === "delete") {
+      this.entries.delete(operation.key);
+    }
+  }
+  async append(operation) {
+    const fs = loadFs2();
+    const path = loadPath2();
+    fs.mkdirSync(path.dirname(this.filePath), { recursive: true });
+    fs.appendFileSync(this.filePath, `${JSON.stringify(operation)}
+`, "utf8");
+  }
+  async compact() {
+    const fs = loadFs2();
+    const path = loadPath2();
+    fs.mkdirSync(path.dirname(this.filePath), { recursive: true });
+    const lines = Array.from(this.entries.entries()).map(([key, value]) => JSON.stringify({
+      op: "upsert",
+      key,
+      value,
+      time: (/* @__PURE__ */ new Date()).toISOString()
+    }));
+    fs.writeFileSync(this.filePath, `${lines.join("\n")}${lines.length > 0 ? "\n" : ""}`, "utf8");
+  }
+};
+function loadFs2() {
+  if (typeof require !== "function") throw new Error("Node fs module is unavailable in this Obsidian environment.");
+  return require("fs");
+}
+function loadPath2() {
+  if (typeof require !== "function") throw new Error("Node path module is unavailable in this Obsidian environment.");
+  return require("path");
+}
+function serializeError3(error) {
+  if (error instanceof Error) return { name: error.name, message: error.message, stack: error.stack };
+  return error;
+}
+
 // src/wordpress-client.ts
 var import_obsidian2 = require("obsidian");
 var WordPressClient = class {
@@ -709,7 +810,7 @@ var BrowserImageCompressor = class {
       });
       return prepared;
     } catch (error) {
-      this.logger.warn("Image compression failed; uploading original image", serializeError3(error));
+      this.logger.warn("Image compression failed; uploading original image", serializeError4(error));
       return this.original(file, body, mimeType, "Compression failed");
     }
   }
@@ -750,7 +851,7 @@ function extensionForMimeType(mimeType) {
 function replaceExtension(fileName, extension) {
   return fileName.replace(/\.[^.]+$/, `.${extension}`);
 }
-function serializeError3(error) {
+function serializeError4(error) {
   if (error instanceof Error) {
     return { name: error.name, message: error.message, stack: error.stack };
   }
@@ -783,7 +884,7 @@ var HttpMediaUrlChecker = class {
       this.logger.info("Cached media GET check completed", { url, status: get.status, result: getStatus });
       return getStatus;
     } catch (error) {
-      this.logger.warn("Cached media URL check failed due to network or client error", serializeError4(error));
+      this.logger.warn("Cached media URL check failed due to network or client error", serializeError5(error));
       return "unknown";
     }
   }
@@ -793,7 +894,7 @@ function classifyStatus(status) {
   if (status === 404 || status === 410) return "missing";
   return "unknown";
 }
-function serializeError4(error) {
+function serializeError5(error) {
   if (error instanceof Error) {
     return { name: error.name, message: error.message, stack: error.stack };
   }
@@ -1115,11 +1216,12 @@ function formatBytes(bytes) {
 
 // src/image-assets.ts
 var WordPressImageAssetProcessor = class {
-  constructor(app, client, settings, logger, persistSettings) {
+  constructor(app, client, settings, logger, mediaCacheStore, persistSettings) {
     this.app = app;
     this.client = client;
     this.settings = settings;
     this.logger = logger;
+    this.mediaCacheStore = mediaCacheStore;
     this.persistSettings = persistSettings;
     this.uploadedByPath = /* @__PURE__ */ new Map();
     this.currentPostTitle = "untitled";
@@ -1183,7 +1285,7 @@ var WordPressImageAssetProcessor = class {
       this.logger.info("Reusing uploaded image in current publish", { path: file.path, url: cached.url });
       return cached;
     }
-    const persistentCache = this.getValidPersistentCache(file);
+    const persistentCache = await this.getValidPersistentCache(file);
     if (persistentCache) {
       const remoteStatus = await this.mediaUrlChecker.check(persistentCache.url);
       if (remoteStatus === "available" || remoteStatus === "unknown") {
@@ -1206,8 +1308,7 @@ var WordPressImageAssetProcessor = class {
         objectKey: persistentCache.objectKey,
         provider: persistentCache.provider
       });
-      delete this.settings.mediaCache[file.path];
-      await this.persistSettings();
+      await this.mediaCacheStore.delete(file.path);
     }
     const mimeType = getImageMimeType(file.extension);
     const originalBody = await this.app.vault.readBinary(file);
@@ -1284,8 +1385,8 @@ var WordPressImageAssetProcessor = class {
       return this.storageProvider.uploadImage(uploadInput);
     }
   }
-  getValidPersistentCache(file) {
-    const entry = this.settings.mediaCache[file.path];
+  async getValidPersistentCache(file) {
+    const entry = await this.mediaCacheStore.get(file.path);
     if (!entry) return void 0;
     if (entry.vaultPath !== file.path) return void 0;
     if (entry.size !== file.stat.size) return void 0;
@@ -1296,8 +1397,7 @@ var WordPressImageAssetProcessor = class {
     return entry;
   }
   async writePersistentCache(file, entry) {
-    this.settings.mediaCache[file.path] = entry;
-    await this.persistSettings();
+    await this.mediaCacheStore.set(entry);
   }
 };
 function splitByFencedCodeBlocks(markdown) {
@@ -1482,7 +1582,14 @@ function replaceRenderedPlaceholder(html, token, replacement) {
 function normalizeCodeBlocks(html) {
   const container = document.createElement("div");
   container.innerHTML = html;
+  let codeBlockIndex = 0;
   container.querySelectorAll("pre").forEach((pre) => {
+    const code = pre.querySelector("code");
+    if (!code) return;
+    normalizeCodeLanguageClasses(pre, code);
+    const copySourceId = `owp-code-source-${codeBlockIndex++}`;
+    code.id = copySourceId;
+    const copyToastId = `owp-code-toast-${codeBlockIndex}`;
     pre.classList.add("owp-code-block");
     appendInlineStyle(pre, [
       "position:relative",
@@ -1493,19 +1600,48 @@ function normalizeCodeBlocks(html) {
       "border:1px solid rgba(0,0,0,0.12)",
       "border-radius:8px",
       "background:#f7f7f8",
-      "line-height:1.55"
+      "line-height:1.55",
+      "color:#1f2937",
+      "font-family:ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace"
     ]);
-    pre.querySelectorAll("code").forEach((code) => {
-      appendInlineStyle(code, [
-        "display:block",
-        "overflow-x:auto",
-        "white-space:pre",
-        "background:transparent"
-      ]);
-    });
+    appendInlineStyle(code, [
+      "display:block",
+      "overflow-x:auto",
+      "white-space:pre",
+      "background:transparent",
+      "color:#1f2937",
+      "font-family:inherit",
+      "font-size:0.95em"
+    ]);
+    normalizeCodeHighlightTokens(code);
+    const copyToast = document.createElement("span");
+    copyToast.id = copyToastId;
+    copyToast.textContent = "Copied";
+    copyToast.setAttribute("aria-hidden", "true");
+    appendInlineStyle(copyToast, [
+      "position:absolute",
+      "top:0.8em",
+      "right:3.35em",
+      "padding:0.22em 0.55em",
+      "border-radius:999px",
+      "background:#111827",
+      "color:#ffffff",
+      "font-size:0.75em",
+      "line-height:1.2",
+      "white-space:nowrap",
+      "box-shadow:0 2px 8px rgba(0,0,0,0.18)",
+      "opacity:0",
+      "transform:translateY(-4px)",
+      "pointer-events:none",
+      "transition:opacity 140ms ease, transform 140ms ease"
+    ]);
+    pre.appendChild(copyToast);
     pre.querySelectorAll(".copy-code-button").forEach((button) => {
+      const copyScript = buildCopyButtonScript(copySourceId, copyToastId);
+      button.setAttribute("type", "button");
       button.setAttribute("aria-label", button.getAttribute("aria-label") || "Copy code");
       button.setAttribute("title", button.getAttribute("title") || "Copy code");
+      button.setAttribute("onclick", copyScript);
       appendInlineStyle(button, [
         "position:absolute",
         "top:0.55em",
@@ -1543,6 +1679,88 @@ function normalizeCodeBlocks(html) {
     });
   });
   return container.innerHTML;
+}
+function normalizeCodeHighlightTokens(code) {
+  const tokenStyles = [
+    [".token.comment, .token.prolog, .token.doctype, .token.cdata", ["color:#6b7280", "font-style:italic"]],
+    [".token.punctuation, .token.operator", ["color:#475569"]],
+    [".token.property, .token.tag, .token.boolean, .token.number, .token.constant, .token.symbol, .token.deleted", ["color:#b91c1c"]],
+    [".token.selector, .token.attr-name, .token.string, .token.char, .token.builtin, .token.inserted", ["color:#047857"]],
+    [".token.atrule, .token.attr-value, .token.keyword", ["color:#7c3aed", "font-weight:600"]],
+    [".token.function, .token.class-name", ["color:#1d4ed8"]],
+    [".token.regex, .token.important, .token.variable", ["color:#c2410c"]],
+    [".token.url", ["color:#0f766e", "text-decoration:underline"]]
+  ];
+  for (const [selector, styles] of tokenStyles) {
+    code.querySelectorAll(selector).forEach((token) => appendInlineStyle(token, styles));
+  }
+}
+function normalizeCodeLanguageClasses(pre, code) {
+  const normalizedLanguage = detectNormalizedLanguage(pre, code);
+  stripLanguageClasses(pre);
+  stripLanguageClasses(code);
+  if (!normalizedLanguage) return;
+  pre.classList.add(`language-${normalizedLanguage}`);
+  code.classList.add(`language-${normalizedLanguage}`);
+}
+function detectNormalizedLanguage(pre, code) {
+  const classes = [
+    ...Array.from(pre.classList),
+    ...Array.from(code.classList)
+  ];
+  for (const className of classes) {
+    const raw = extractLanguageName(className);
+    if (!raw) continue;
+    const normalized = normalizeLanguageName(raw);
+    if (normalized) return normalized;
+  }
+  return void 0;
+}
+function extractLanguageName(className) {
+  if (className.startsWith("language-")) return className.slice("language-".length);
+  if (className.startsWith("lang-")) return className.slice("lang-".length);
+  return void 0;
+}
+function stripLanguageClasses(element) {
+  Array.from(element.classList).forEach((className) => {
+    if (className === "language-none" || className.startsWith("language-") || className.startsWith("lang-")) {
+      element.classList.remove(className);
+    }
+  });
+}
+function normalizeLanguageName(raw) {
+  var _a;
+  const trimmed = raw.trim();
+  if (!trimmed || trimmed.toLowerCase() === "none") return void 0;
+  const aliases = {
+    "c++": "cpp",
+    "cpp": "cpp",
+    "c#": "csharp",
+    "cs": "csharp",
+    "js": "javascript",
+    "ts": "typescript",
+    "shell": "bash",
+    "sh": "bash",
+    "html": "markup",
+    "xml": "markup"
+  };
+  const lowered = trimmed.toLowerCase();
+  return (_a = aliases[lowered]) != null ? _a : lowered.replace(/[^a-z0-9_-]+/g, "");
+}
+function buildCopyButtonScript(copySourceId, copyToastId) {
+  const escapedId = JSON.stringify(copySourceId);
+  const escapedToastId = JSON.stringify(copyToastId);
+  return [
+    "(function(button){",
+    `var source=document.getElementById(${escapedId});`,
+    `var toast=document.getElementById(${escapedToastId});`,
+    "if(!source)return;",
+    "var text=source.innerText||source.textContent||'';",
+    "var onSuccess=function(){var original=button.title||'Copy code';button.title='Copied';button.setAttribute('aria-label','Copied');if(toast){toast.style.opacity='1';toast.style.transform='translateY(0)';clearTimeout(button.__owpCopyToastTimer);button.__owpCopyToastTimer=setTimeout(function(){toast.style.opacity='0';toast.style.transform='translateY(-4px)';},1200);}setTimeout(function(){button.title=original;button.setAttribute('aria-label',original);},1200);};",
+    "if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(text).then(onSuccess).catch(function(){});return;}",
+    "var area=document.createElement('textarea');area.value=text;area.setAttribute('readonly','readonly');area.style.position='fixed';area.style.opacity='0';document.body.appendChild(area);area.select();try{document.execCommand('copy');onSuccess();}finally{document.body.removeChild(area);}",
+    "})(this);"
+  ].join("");
 }
 function normalizeTables(html) {
   const container = document.createElement("div");
@@ -1997,10 +2215,11 @@ function addRow(list, label, value) {
 
 // src/publisher.ts
 var PublishService = class {
-  constructor(app, settings, logger, persistSettings = async () => void 0) {
+  constructor(app, settings, logger, mediaCacheStore, persistSettings = async () => void 0) {
     this.app = app;
     this.settings = settings;
     this.logger = logger;
+    this.mediaCacheStore = mediaCacheStore;
     this.persistSettings = persistSettings;
     this.frontmatter = new FrontmatterService(app);
   }
@@ -2052,7 +2271,7 @@ var PublishService = class {
           await this.frontmatter.writeInitialMapping(file, input);
           await this.publish(file, input);
         } catch (error) {
-          this.logger.error("Initial publish failed", serializeError5(error));
+          this.logger.error("Initial publish failed", serializeError6(error));
           showErrorLogModal(this.app, "WordPress publish failed", this.logger, error);
         }
       },
@@ -2072,7 +2291,7 @@ var PublishService = class {
         }
       };
     } catch (error) {
-      this.logger.warn("Could not load WordPress categories for publish modal", serializeError5(error));
+      this.logger.warn("Could not load WordPress categories for publish modal", serializeError6(error));
       return void 0;
     }
   }
@@ -2093,6 +2312,7 @@ var PublishService = class {
       client,
       this.settings,
       this.logger,
+      this.mediaCacheStore,
       this.persistSettings
     );
     const markdownWithRemoteImages = await imageProcessor.rewriteMarkdownImages(markdownBody, file.path, input.title);
@@ -2156,7 +2376,7 @@ var PublishService = class {
     }
   }
 };
-function serializeError5(error) {
+function serializeError6(error) {
   if (error instanceof Error) {
     return { name: error.name, message: error.message, stack: error.stack };
   }
@@ -2277,7 +2497,7 @@ var ElectronSafeStorageSecretStore = class {
     try {
       return this.safeStorage.decryptString(base64ToBuffer(encrypted));
     } catch (error) {
-      this.logger.warn("Failed to decrypt secret", { key, error: serializeError6(error) });
+      this.logger.warn("Failed to decrypt secret", { key, error: serializeError7(error) });
       return void 0;
     }
   }
@@ -2304,7 +2524,7 @@ function loadSafeStorage(logger) {
     const electron = require("electron");
     return (_b = electron.safeStorage) != null ? _b : (_a = electron.remote) == null ? void 0 : _a.safeStorage;
   } catch (error) {
-    logger.warn("Could not load Electron safeStorage", serializeError6(error));
+    logger.warn("Could not load Electron safeStorage", serializeError7(error));
     return void 0;
   }
 }
@@ -2321,7 +2541,7 @@ function base64ToBuffer(value) {
   }
   return bytes;
 }
-function serializeError6(error) {
+function serializeError7(error) {
   if (error instanceof Error) return { name: error.name, message: error.message, stack: error.stack };
   return error;
 }
@@ -2772,6 +2992,8 @@ var WordPressPublisherPlugin = class extends import_obsidian14.Plugin {
     this.settings.secretStoreStatus = this.secretStore.status();
     await this.migrateLocalApiKeyStorage();
     await this.migratePlaintextSecrets();
+    this.mediaCacheStore = new JsonlMediaCacheStore(this.getMediaCachePath(), this.logger);
+    await this.migrateMediaCacheStorage();
   }
   async saveSettings() {
     await this.saveData(this.settings);
@@ -2784,9 +3006,19 @@ var WordPressPublisherPlugin = class extends import_obsidian14.Plugin {
     });
   }
   getPluginLogPath() {
+    const basePath = this.getVaultBasePath();
+    if (!basePath) return "";
+    return `${basePath}/.obsidian/plugins/${this.manifest.id}/logs/plugin.log`;
+  }
+  getMediaCachePath() {
+    const basePath = this.getVaultBasePath();
+    if (!basePath) return "";
+    return `${basePath}/.obsidian/plugins/${this.manifest.id}/media-cache.jsonl`;
+  }
+  getVaultBasePath() {
+    var _a;
     const adapter = this.app.vault.adapter;
-    if (!adapter.basePath) return "";
-    return `${adapter.basePath}/.obsidian/plugins/${this.manifest.id}/logs/plugin.log`;
+    return (_a = adapter.basePath) != null ? _a : "";
   }
   getDebugConfig() {
     return {
@@ -2840,7 +3072,7 @@ var WordPressPublisherPlugin = class extends import_obsidian14.Plugin {
     try {
       await this.localApiServer.restart();
     } catch (error) {
-      this.logger.error("Failed to start local API server", serializeError7(error));
+      this.logger.error("Failed to start local API server", serializeError8(error));
       new import_obsidian14.Notice(error instanceof Error ? `Local API failed: ${error.message}` : "Local API failed to start", 1e4);
     }
   }
@@ -2857,7 +3089,7 @@ var WordPressPublisherPlugin = class extends import_obsidian14.Plugin {
       const service = this.createPublishService(settings);
       return await service.publishCurrentNote({ ...options, allowInteractive: (_a = options.allowInteractive) != null ? _a : false, showNotice: (_b = options.showNotice) != null ? _b : false });
     } catch (error) {
-      this.logger.error("API publish current note failed", serializeError7(error));
+      this.logger.error("API publish current note failed", serializeError8(error));
       showErrorLogModal(this.app, "WordPress publish failed", this.logger, error);
       throw error;
     }
@@ -2870,7 +3102,7 @@ var WordPressPublisherPlugin = class extends import_obsidian14.Plugin {
       const service = this.createPublishService(settings);
       return await service.publishNoteByPath(path, { ...options, allowInteractive: (_a = options.allowInteractive) != null ? _a : false, showNotice: (_b = options.showNotice) != null ? _b : false });
     } catch (error) {
-      this.logger.error("API publish note failed", { path, error: serializeError7(error) });
+      this.logger.error("API publish note failed", { path, error: serializeError8(error) });
       showErrorLogModal(this.app, "WordPress publish failed", this.logger, error);
       throw error;
     }
@@ -2950,6 +3182,16 @@ var WordPressPublisherPlugin = class extends import_obsidian14.Plugin {
     }
     if (changed) await this.saveSettings();
   }
+  async migrateMediaCacheStorage() {
+    var _a;
+    const oldCache = (_a = this.settings.mediaCache) != null ? _a : {};
+    if (Object.keys(oldCache).length === 0) return;
+    const migrated = await this.mediaCacheStore.migrateFromSettingsCache(oldCache);
+    if (migrated > 0) {
+      this.settings.mediaCache = {};
+      await this.saveSettings();
+    }
+  }
   markSecretSaved(key, saved) {
     if (key === "wordpress.applicationPassword") this.settings.applicationPasswordSaved = saved;
     if (key === "aliyun.accessKeySecret") this.settings.aliyunOss.accessKeySecretSaved = saved;
@@ -2978,7 +3220,7 @@ var WordPressPublisherPlugin = class extends import_obsidian14.Plugin {
     try {
       await action(service);
     } catch (error) {
-      this.logger.error(`${name} failed`, serializeError7(error));
+      this.logger.error(`${name} failed`, serializeError8(error));
       showErrorLogModal(this.app, `${name} failed`, this.logger, error);
     }
   }
@@ -2989,7 +3231,7 @@ var WordPressPublisherPlugin = class extends import_obsidian14.Plugin {
     try {
       await service.publishCurrentNote();
     } catch (error) {
-      this.logger.error("Publish command failed", serializeError7(error));
+      this.logger.error("Publish command failed", serializeError8(error));
       showErrorLogModal(this.app, "WordPress publish failed", this.logger, error);
     }
   }
@@ -2998,8 +3240,7 @@ var WordPressPublisherPlugin = class extends import_obsidian14.Plugin {
     this.logger.clear();
   }
   createPublishService(settings) {
-    return new PublishService(this.app, settings, this.logger, async () => {
-      this.settings.mediaCache = settings.mediaCache;
+    return new PublishService(this.app, settings, this.logger, this.mediaCacheStore, async () => {
       this.settings.aliyunOss.endpoint = settings.aliyunOss.endpoint;
       await this.saveSettings();
     });
@@ -3010,7 +3251,7 @@ var WordPressPublisherPlugin = class extends import_obsidian14.Plugin {
     }
   }
 };
-function serializeError7(error) {
+function serializeError8(error) {
   if (error instanceof Error) {
     return { name: error.name, message: error.message, stack: error.stack };
   }

@@ -30,7 +30,7 @@ Current release target: `1.1.0-beta`. This beta is intended for early testing; f
 - Converts Obsidian image embeds like `![[image.png]]` to WordPress media URLs.
 - Converts local standard Markdown images like `![alt](path)` to WordPress media URLs.
 - Reuses the same uploaded image URL within a single publish operation when the same local image appears multiple times.
-- Persists a media cache so unchanged images are not uploaded again on later publishes.
+- Persists a JSONL media cache outside `data.json` so unchanged images are not uploaded again on later publishes.
 - Checks cached media URLs before reuse; missing media such as `404` or `410` is re-uploaded.
 - Supports custom Aliyun OSS object key rules such as `{postTitle}/{fileName}`.
 - Provides an Aliyun OSS test-upload button in settings for configuration diagnosis.
@@ -307,6 +307,134 @@ If the PHP snippet seems unchanged:
 - Hard-refresh the browser with `Cmd + Shift + R` on macOS.
 - Check the page source for `mermaid.min.js`.
 - Check the Network tab for a successful `mermaid.min.js` request.
+
+## Enable Syntax Highlighting On WordPress
+
+The plugin publishes fenced code blocks with normalized Prism-friendly language classes such as:
+
+```html
+<pre class="language-cpp"><code class="language-cpp">...</code></pre>
+```
+
+WordPress still needs a frontend highlighter. A practical choice is Prism.js.
+
+### Recommended: Code Snippets Plugin
+
+Install the WordPress plugin `Code Snippets`, then add a PHP snippet that runs on the frontend:
+
+```php
+function otw_enqueue_prism_assets() {
+    if (!is_singular()) {
+        return;
+    }
+
+    wp_enqueue_style(
+        'prism-theme',
+        'https://cdn.jsdelivr.net/npm/prismjs@1/themes/prism-tomorrow.min.css',
+        array(),
+        '1.29.0'
+    );
+
+    wp_enqueue_script(
+        'prism-core',
+        'https://cdn.jsdelivr.net/npm/prismjs@1/components/prism-core.min.js',
+        array(),
+        '1.29.0',
+        true
+    );
+
+    wp_enqueue_script(
+        'prism-clike',
+        'https://cdn.jsdelivr.net/npm/prismjs@1/components/prism-clike.min.js',
+        array('prism-core'),
+        '1.29.0',
+        true
+    );
+
+    wp_enqueue_script(
+        'prism-c',
+        'https://cdn.jsdelivr.net/npm/prismjs@1/components/prism-c.min.js',
+        array('prism-clike'),
+        '1.29.0',
+        true
+    );
+
+    wp_enqueue_script(
+        'prism-cpp',
+        'https://cdn.jsdelivr.net/npm/prismjs@1/components/prism-cpp.min.js',
+        array('prism-c'),
+        '1.29.0',
+        true
+    );
+
+    wp_enqueue_script(
+        'prism-javascript',
+        'https://cdn.jsdelivr.net/npm/prismjs@1/components/prism-javascript.min.js',
+        array('prism-core'),
+        '1.29.0',
+        true
+    );
+
+    wp_enqueue_script(
+        'prism-css',
+        'https://cdn.jsdelivr.net/npm/prismjs@1/components/prism-css.min.js',
+        array('prism-core'),
+        '1.29.0',
+        true
+    );
+
+    wp_enqueue_script(
+        'prism-markup-templating',
+        'https://cdn.jsdelivr.net/npm/prismjs@1/components/prism-markup-templating.min.js',
+        array('prism-core'),
+        '1.29.0',
+        true
+    );
+
+    wp_enqueue_script(
+        'prism-php',
+        'https://cdn.jsdelivr.net/npm/prismjs@1/components/prism-php.min.js',
+        array('prism-core', 'prism-markup-templating'),
+        '1.29.0',
+        true
+    );
+
+    wp_add_inline_script(
+        'prism-php',
+        'document.addEventListener("DOMContentLoaded", function () { if (window.Prism) Prism.highlightAll(); });'
+    );
+}
+add_action('wp_enqueue_scripts', 'otw_enqueue_prism_assets');
+```
+
+### Notes
+
+- `cpp` should depend on `c`, and `c` should depend on `clike`.
+- `php` should load after `markup-templating`.
+- If you use a caching plugin or CDN, clear cache after adding the snippet.
+- If your site blocks CDN assets, host Prism locally instead of loading from jsDelivr.
+
+### Troubleshooting
+
+Open the browser console on a published post and check:
+
+```js
+typeof Prism
+```
+
+Expected result:
+
+```js
+"object"
+```
+
+Check whether your published code blocks have normalized language classes:
+
+```js
+document.querySelectorAll('pre code.language-cpp, pre code.language-javascript, pre code.language-php, pre code.language-css').length
+```
+
+If Prism is loaded but code is still plain text, inspect one code block and verify that the class is something like `language-cpp` instead of `language-C++` or `language-none`.
 
 ## Secret Storage
 

@@ -2,6 +2,7 @@ import { App, Notice, TFile } from "obsidian";
 import { showErrorLogModal } from "./logger";
 import { FrontmatterService, stripFrontmatter } from "./frontmatter";
 import { WordPressImageAssetProcessor } from "./image-assets";
+import type { MediaCacheStore } from "./media-cache-store";
 import { ObsidianMarkdownConverter } from "./markdown-converter";
 import { MetadataModal } from "./metadata-modal";
 import { confirmRemoteOverwrite } from "./remote-post-modals";
@@ -15,6 +16,7 @@ export class PublishService {
     private app: App,
     private settings: WordPressPluginSettings,
     private logger: Logger,
+    private mediaCacheStore: MediaCacheStore,
     private persistSettings: () => Promise<void> = async () => undefined,
   ) {
     this.frontmatter = new FrontmatterService(app);
@@ -121,6 +123,7 @@ export class PublishService {
       client,
       this.settings,
       this.logger,
+      this.mediaCacheStore,
       this.persistSettings,
     );
     const markdownWithRemoteImages = await imageProcessor.rewriteMarkdownImages(markdownBody, file.path, input.title);

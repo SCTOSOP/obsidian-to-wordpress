@@ -5,6 +5,7 @@ import { HttpMediaUrlChecker } from "./media-url-checker";
 import { createImageStorageProvider, type ImageStorageProvider } from "./storage/image-storage-provider";
 import { AliyunOssEndpointMismatchError } from "./storage/aliyun-oss-provider";
 import { confirmLargeImageUpload } from "./upload-confirm-modal";
+import type { MediaCacheStore } from "./media-cache-store";
 import type { Logger, MediaCacheEntry, WordPressPluginSettings } from "./types";
 import { WordPressClient } from "./wordpress-client";
 
@@ -29,6 +30,7 @@ export class WordPressImageAssetProcessor implements ImageAssetProcessor {
     private client: WordPressClient,
     private settings: WordPressPluginSettings,
     private logger: Logger,
+    private mediaCacheStore: MediaCacheStore,
     private persistSettings: () => Promise<void>,
   ) {
     this.compressor = new BrowserImageCompressor(logger);
@@ -102,7 +104,7 @@ export class WordPressImageAssetProcessor implements ImageAssetProcessor {
       return cached;
     }
 
-    const persistentCache = this.getValidPersistentCache(file);
+    const persistentCache = await this.getValidPersistentCache(file);
     if (persistentCache) {
       const remoteStatus = await this.mediaUrlChecker.check(persistentCache.url);
       if (remoteStatus === "available" || remoteStatus === "unknown") {
@@ -126,8 +128,7 @@ export class WordPressImageAssetProcessor implements ImageAssetProcessor {
         objectKey: persistentCache.objectKey,
         provider: persistentCache.provider,
       });
-      delete this.settings.mediaCache[file.path];
-      await this.persistSettings();
+      await this.mediaCacheStore.delete(file.path);
     }
 
     const mimeType = getImageMimeType(file.extension);
@@ -214,8 +215,8 @@ export class WordPressImageAssetProcessor implements ImageAssetProcessor {
     }
   }
 
-  private getValidPersistentCache(file: TFile): MediaCacheEntry | undefined {
-    const entry = this.settings.mediaCache[file.path];
+  private async getValidPersistentCache(file: TFile): Promise<MediaCacheEntry | undefined> {
+    const entry = await this.mediaCacheStore.get(file.path);
     if (!entry) return undefined;
     if (entry.vaultPath !== file.path) return undefined;
     if (entry.size !== file.stat.size) return undefined;
@@ -227,8 +228,7 @@ export class WordPressImageAssetProcessor implements ImageAssetProcessor {
   }
 
   private async writePersistentCache(file: TFile, entry: MediaCacheEntry): Promise<void> {
-    this.settings.mediaCache[file.path] = entry;
-    await this.persistSettings();
+    await this.mediaCacheStore.set(entry);
   }
 }
 

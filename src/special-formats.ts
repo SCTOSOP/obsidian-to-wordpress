@@ -128,7 +128,16 @@ function normalizeCodeBlocks(html: string): string {
   const container = document.createElement("div");
   container.innerHTML = html;
 
+  let codeBlockIndex = 0;
   container.querySelectorAll<HTMLElement>("pre").forEach((pre) => {
+    const code = pre.querySelector<HTMLElement>("code");
+    if (!code) return;
+    normalizeCodeLanguageClasses(pre, code);
+
+    const copySourceId = `owp-code-source-${codeBlockIndex++}`;
+    code.id = copySourceId;
+    const copyToastId = `owp-code-toast-${codeBlockIndex}`;
+
     pre.classList.add("owp-code-block");
     appendInlineStyle(pre, [
       "position:relative",
@@ -140,20 +149,51 @@ function normalizeCodeBlocks(html: string): string {
       "border-radius:8px",
       "background:#f7f7f8",
       "line-height:1.55",
+      "color:#1f2937",
+      "font-family:ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace",
     ]);
 
-    pre.querySelectorAll<HTMLElement>("code").forEach((code) => {
-      appendInlineStyle(code, [
-        "display:block",
-        "overflow-x:auto",
-        "white-space:pre",
-        "background:transparent",
-      ]);
-    });
+    appendInlineStyle(code, [
+      "display:block",
+      "overflow-x:auto",
+      "white-space:pre",
+      "background:transparent",
+      "color:#1f2937",
+      "font-family:inherit",
+      "font-size:0.95em",
+    ]);
+
+    normalizeCodeHighlightTokens(code);
+
+    const copyToast = document.createElement("span");
+    copyToast.id = copyToastId;
+    copyToast.textContent = "Copied";
+    copyToast.setAttribute("aria-hidden", "true");
+    appendInlineStyle(copyToast, [
+      "position:absolute",
+      "top:0.8em",
+      "right:3.35em",
+      "padding:0.22em 0.55em",
+      "border-radius:999px",
+      "background:#111827",
+      "color:#ffffff",
+      "font-size:0.75em",
+      "line-height:1.2",
+      "white-space:nowrap",
+      "box-shadow:0 2px 8px rgba(0,0,0,0.18)",
+      "opacity:0",
+      "transform:translateY(-4px)",
+      "pointer-events:none",
+      "transition:opacity 140ms ease, transform 140ms ease",
+    ]);
+    pre.appendChild(copyToast);
 
     pre.querySelectorAll<HTMLElement>(".copy-code-button").forEach((button) => {
+      const copyScript = buildCopyButtonScript(copySourceId, copyToastId);
+      button.setAttribute("type", "button");
       button.setAttribute("aria-label", button.getAttribute("aria-label") || "Copy code");
       button.setAttribute("title", button.getAttribute("title") || "Copy code");
+      button.setAttribute("onclick", copyScript);
       appendInlineStyle(button, [
         "position:absolute",
         "top:0.55em",
@@ -193,6 +233,101 @@ function normalizeCodeBlocks(html: string): string {
   });
 
   return container.innerHTML;
+}
+
+function normalizeCodeHighlightTokens(code: HTMLElement): void {
+  const tokenStyles: Array<[selector: string, styles: string[]]> = [
+    [".token.comment, .token.prolog, .token.doctype, .token.cdata", ["color:#6b7280", "font-style:italic"]],
+    [".token.punctuation, .token.operator", ["color:#475569"]],
+    [".token.property, .token.tag, .token.boolean, .token.number, .token.constant, .token.symbol, .token.deleted", ["color:#b91c1c"]],
+    [".token.selector, .token.attr-name, .token.string, .token.char, .token.builtin, .token.inserted", ["color:#047857"]],
+    [".token.atrule, .token.attr-value, .token.keyword", ["color:#7c3aed", "font-weight:600"]],
+    [".token.function, .token.class-name", ["color:#1d4ed8"]],
+    [".token.regex, .token.important, .token.variable", ["color:#c2410c"]],
+    [".token.url", ["color:#0f766e", "text-decoration:underline"]],
+  ];
+
+  for (const [selector, styles] of tokenStyles) {
+    code.querySelectorAll<HTMLElement>(selector).forEach((token) => appendInlineStyle(token, styles));
+  }
+}
+
+function normalizeCodeLanguageClasses(pre: HTMLElement, code: HTMLElement): void {
+  const normalizedLanguage = detectNormalizedLanguage(pre, code);
+  stripLanguageClasses(pre);
+  stripLanguageClasses(code);
+
+  if (!normalizedLanguage) return;
+
+  pre.classList.add(`language-${normalizedLanguage}`);
+  code.classList.add(`language-${normalizedLanguage}`);
+}
+
+function detectNormalizedLanguage(pre: HTMLElement, code: HTMLElement): string | undefined {
+  const classes = [
+    ...Array.from(pre.classList),
+    ...Array.from(code.classList),
+  ];
+
+  for (const className of classes) {
+    const raw = extractLanguageName(className);
+    if (!raw) continue;
+    const normalized = normalizeLanguageName(raw);
+    if (normalized) return normalized;
+  }
+
+  return undefined;
+}
+
+function extractLanguageName(className: string): string | undefined {
+  if (className.startsWith("language-")) return className.slice("language-".length);
+  if (className.startsWith("lang-")) return className.slice("lang-".length);
+  return undefined;
+}
+
+function stripLanguageClasses(element: HTMLElement): void {
+  Array.from(element.classList).forEach((className) => {
+    if (className === "language-none" || className.startsWith("language-") || className.startsWith("lang-")) {
+      element.classList.remove(className);
+    }
+  });
+}
+
+function normalizeLanguageName(raw: string): string | undefined {
+  const trimmed = raw.trim();
+  if (!trimmed || trimmed.toLowerCase() === "none") return undefined;
+
+  const aliases: Record<string, string> = {
+    "c++": "cpp",
+    "cpp": "cpp",
+    "c#": "csharp",
+    "cs": "csharp",
+    "js": "javascript",
+    "ts": "typescript",
+    "shell": "bash",
+    "sh": "bash",
+    "html": "markup",
+    "xml": "markup",
+  };
+
+  const lowered = trimmed.toLowerCase();
+  return aliases[lowered] ?? lowered.replace(/[^a-z0-9_-]+/g, "");
+}
+
+function buildCopyButtonScript(copySourceId: string, copyToastId: string): string {
+  const escapedId = JSON.stringify(copySourceId);
+  const escapedToastId = JSON.stringify(copyToastId);
+  return [
+    "(function(button){",
+    `var source=document.getElementById(${escapedId});`,
+    `var toast=document.getElementById(${escapedToastId});`,
+    "if(!source)return;",
+    "var text=source.innerText||source.textContent||'';",
+    "var onSuccess=function(){var original=button.title||'Copy code';button.title='Copied';button.setAttribute('aria-label','Copied');if(toast){toast.style.opacity='1';toast.style.transform='translateY(0)';clearTimeout(button.__owpCopyToastTimer);button.__owpCopyToastTimer=setTimeout(function(){toast.style.opacity='0';toast.style.transform='translateY(-4px)';},1200);}setTimeout(function(){button.title=original;button.setAttribute('aria-label',original);},1200);};",
+    "if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(text).then(onSuccess).catch(function(){});return;}",
+    "var area=document.createElement('textarea');area.value=text;area.setAttribute('readonly','readonly');area.style.position='fixed';area.style.opacity='0';document.body.appendChild(area);area.select();try{document.execCommand('copy');onSuccess();}finally{document.body.removeChild(area);}",
+    "})(this);",
+  ].join("");
 }
 
 function normalizeTables(html: string): string {

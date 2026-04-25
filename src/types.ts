@@ -14,6 +14,9 @@ export interface WordPressPluginSettings {
   localApi: LocalApiSettings;
   encryptedSecrets: Record<string, string>;
   secretStoreStatus?: SecretStoreStatus;
+  /**
+   * @deprecated Kept only for one-time migration to the JSONL media cache store.
+   */
   mediaCache: Record<string, MediaCacheEntry>;
 }
 

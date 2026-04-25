@@ -33,7 +33,7 @@
 - 支持 Obsidian 图片嵌入语法，例如 `![[image.png]]`。
 - 支持本地 Markdown 图片语法，例如 `![alt](path)`。
 - 同一次发布中，同一张本地图片只上传一次。
-- 持久化图片缓存，后续发布时未变化的图片不会重复上传。
+- 使用独立 JSONL 文件持久化图片缓存，避免缓存记录持续写入 `data.json`；后续发布时未变化的图片不会重复上传。
 - 复用缓存前会检查远端媒体 URL；如果返回 `404` 或 `410` 等资源缺失状态，会重新上传。
 - 支持自定义阿里云 OSS 对象路径规则，例如 `{postTitle}/{fileName}`。
 - 设置页提供阿里云 OSS 测试上传按钮，方便排查 OSS 配置问题。
@@ -258,6 +258,134 @@ JS);
 ```
 
 保存后选择在前端运行。如果仍未生效，请清理 WordPress 缓存、LiteSpeed/Cloudflare 缓存，并在浏览器开发者工具中检查是否加载了 `mermaid.min.js`。
+
+## WordPress 前端代码高亮
+
+插件发布代码块时，会尽量把语言类规范化为 Prism 友好的形式，例如：
+
+```html
+<pre class="language-cpp"><code class="language-cpp">...</code></pre>
+```
+
+但 WordPress 端仍然需要加载前端高亮器。推荐使用 Prism.js。
+
+### 推荐：使用 Code Snippets 添加 PHP
+
+安装 WordPress 插件 `Code Snippets`，然后添加一个前端运行的 PHP 片段：
+
+```php
+function otw_enqueue_prism_assets() {
+    if (!is_singular()) {
+        return;
+    }
+
+    wp_enqueue_style(
+        'prism-theme',
+        'https://cdn.jsdelivr.net/npm/prismjs@1/themes/prism-tomorrow.min.css',
+        array(),
+        '1.29.0'
+    );
+
+    wp_enqueue_script(
+        'prism-core',
+        'https://cdn.jsdelivr.net/npm/prismjs@1/components/prism-core.min.js',
+        array(),
+        '1.29.0',
+        true
+    );
+
+    wp_enqueue_script(
+        'prism-clike',
+        'https://cdn.jsdelivr.net/npm/prismjs@1/components/prism-clike.min.js',
+        array('prism-core'),
+        '1.29.0',
+        true
+    );
+
+    wp_enqueue_script(
+        'prism-c',
+        'https://cdn.jsdelivr.net/npm/prismjs@1/components/prism-c.min.js',
+        array('prism-clike'),
+        '1.29.0',
+        true
+    );
+
+    wp_enqueue_script(
+        'prism-cpp',
+        'https://cdn.jsdelivr.net/npm/prismjs@1/components/prism-cpp.min.js',
+        array('prism-c'),
+        '1.29.0',
+        true
+    );
+
+    wp_enqueue_script(
+        'prism-javascript',
+        'https://cdn.jsdelivr.net/npm/prismjs@1/components/prism-javascript.min.js',
+        array('prism-core'),
+        '1.29.0',
+        true
+    );
+
+    wp_enqueue_script(
+        'prism-css',
+        'https://cdn.jsdelivr.net/npm/prismjs@1/components/prism-css.min.js',
+        array('prism-core'),
+        '1.29.0',
+        true
+    );
+
+    wp_enqueue_script(
+        'prism-markup-templating',
+        'https://cdn.jsdelivr.net/npm/prismjs@1/components/prism-markup-templating.min.js',
+        array('prism-core'),
+        '1.29.0',
+        true
+    );
+
+    wp_enqueue_script(
+        'prism-php',
+        'https://cdn.jsdelivr.net/npm/prismjs@1/components/prism-php.min.js',
+        array('prism-core', 'prism-markup-templating'),
+        '1.29.0',
+        true
+    );
+
+    wp_add_inline_script(
+        'prism-php',
+        'document.addEventListener("DOMContentLoaded", function () { if (window.Prism) Prism.highlightAll(); });'
+    );
+}
+add_action('wp_enqueue_scripts', 'otw_enqueue_prism_assets');
+```
+
+### 注意事项
+
+- `cpp` 需要先加载 `c`，`c` 需要先加载 `clike`。
+- `php` 需要依赖 `markup-templating`。
+- 使用缓存插件或 CDN 时，添加 Snippet 后请清缓存。
+- 如果你的网站不允许从 CDN 加载资源，就把 Prism 下载到你自己的站点再 enqueue。
+
+### 排查方法
+
+在浏览器控制台执行：
+
+```js
+typeof Prism
+```
+
+预期结果：
+
+```js
+"object"
+```
+
+再检查页面中的代码块语言类是否正常：
+
+```js
+document.querySelectorAll('pre code.language-cpp, pre code.language-javascript, pre code.language-php, pre code.language-css').length
+```
+
+如果 Prism 已经加载，但代码依旧是纯文本，请检查代码块类名是不是 `language-cpp` 这种标准形式，而不是 `language-C++` 或 `language-none`。
 
 ## 密钥存储
 

@@ -141,7 +141,7 @@ Currently handled:
 - Remote/data/app/file URLs are skipped.
 - Images in normal fenced code blocks are skipped.
 - Uploads are cached within one publish operation by vault path.
-- Unchanged images are reused across later publishes through `settings.mediaCache`.
+- Unchanged images are reused across later publishes through the `MediaCacheStore` abstraction. The default implementation stores append-only JSONL records in the plugin directory and migrates old `settings.mediaCache` data on load.
 - Cached media URLs are checked before reuse. `404` and `410` clear the cache and trigger re-upload; network, permission, hotlink-protection, and ambiguous statuses keep the cache to avoid false re-uploads.
 - Supported image types are compressed before upload using `settings.imageCompressionQuality`.
 - Large prepared uploads trigger a confirmation modal when they exceed `settings.largeImageThresholdMb`.
@@ -464,6 +464,37 @@ Settings:
 - `applicationPasswordSaved`: whether the WordPress Application Password exists in encrypted secret storage.
 - `defaultStatus`: default status for first publish.
 - `debug`: if true, write detailed plugin/MCP logs to files. Publish failures always show a per-run error-log modal in Obsidian.
+
+### `src/media-cache-store.ts`
+
+Persistent media-cache abstraction.
+
+Public API:
+
+```ts
+interface MediaCacheStore {
+  get(vaultPath: string): Promise<MediaCacheEntry | undefined>
+  set(entry: MediaCacheEntry): Promise<void>
+  delete(vaultPath: string): Promise<void>
+  list(): Promise<MediaCacheEntry[]>
+  migrateFromSettingsCache(cache: Record<string, MediaCacheEntry>): Promise<number>
+}
+
+class JsonlMediaCacheStore implements MediaCacheStore
+```
+
+Default file:
+
+```text
+.obsidian/plugins/obsidian-to-wordpress/media-cache.jsonl
+```
+
+Notes:
+
+- `data.json` keeps only plugin settings and legacy migration state.
+- The JSONL store appends `upsert` and `delete` operations.
+- Startup loads the JSONL file into an in-memory map for fast lookup.
+- One-time migration moves old `settings.mediaCache` entries into JSONL and clears the old settings field.
 
 ### `src/secret-store.ts`
 
