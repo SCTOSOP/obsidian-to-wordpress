@@ -1517,7 +1517,8 @@ var ObsidianSpecialFormatTransformer = class {
       placeholders: this.placeholders.map((placeholder) => placeholder.kind)
     });
     let output = html;
-    for (const placeholder of this.placeholders) {
+    const placeholders = [...this.placeholders].sort((left, right) => right.token.length - left.token.length);
+    for (const placeholder of placeholders) {
       output = replaceRenderedPlaceholder(output, placeholder.token, renderPlaceholder(placeholder));
     }
     return normalizeCodeBlocks(normalizeTables(normalizeRenderedImages(normalizeAdmonitionCallouts(output))));
@@ -1538,7 +1539,7 @@ var ObsidianSpecialFormatTransformer = class {
     );
   }
   createPlaceholder(kind, value) {
-    const token = `OWP_SPECIAL_FORMAT_${this.placeholders.length}`;
+    const token = `@@OWP-SPECIAL-FORMAT-${this.placeholders.length}-END@@`;
     this.placeholders.push({ token, kind, value });
     return token;
   }
@@ -1576,8 +1577,26 @@ function transformInlineFormatting(markdown) {
   return markdown.replace(/==([^=\n][^\n]*?)==/g, (_match, body) => `<mark>${body}</mark>`).replace(/~~([^~\n][^\n]*?)~~/g, (_match, body) => `<del>${body}</del>`);
 }
 function replaceRenderedPlaceholder(html, token, replacement) {
-  const escapedToken = escapeRegExp(token);
-  return html.replace(new RegExp(`<p>\\s*${escapedToken}\\s*</p>`, "g"), replacement).replace(new RegExp(escapedToken, "g"), replacement);
+  const container = document.createElement("div");
+  container.innerHTML = html;
+  container.querySelectorAll("p").forEach((paragraph) => {
+    var _a;
+    const text = (_a = paragraph.textContent) == null ? void 0 : _a.trim();
+    if (text !== token) return;
+    const fragment = htmlToFragment(replacement);
+    paragraph.replaceWith(fragment);
+  });
+  const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT);
+  const textNodes = [];
+  let current = walker.nextNode();
+  while (current) {
+    textNodes.push(current);
+    current = walker.nextNode();
+  }
+  for (const textNode of textNodes) {
+    replaceTokenInTextNode(textNode, token, replacement);
+  }
+  return container.innerHTML;
 }
 function normalizeCodeBlocks(html) {
   const container = document.createElement("div");
@@ -1762,6 +1781,28 @@ function buildCopyButtonScript(copySourceId, copyToastId) {
     "})(this);"
   ].join("");
 }
+function replaceTokenInTextNode(textNode, token, replacement) {
+  var _a;
+  const parent = textNode.parentNode;
+  if (!parent) return;
+  const value = (_a = textNode.nodeValue) != null ? _a : "";
+  if (!value.includes(token)) return;
+  const parts = value.split(token);
+  const fragment = document.createDocumentFragment();
+  for (let index = 0; index < parts.length; index += 1) {
+    const part = parts[index];
+    if (part) fragment.appendChild(document.createTextNode(part));
+    if (index < parts.length - 1) {
+      fragment.appendChild(htmlToFragment(replacement));
+    }
+  }
+  parent.replaceChild(fragment, textNode);
+}
+function htmlToFragment(html) {
+  const template = document.createElement("template");
+  template.innerHTML = html;
+  return template.content.cloneNode(true);
+}
 function normalizeTables(html) {
   const container = document.createElement("div");
   container.innerHTML = html;
@@ -1940,9 +1981,6 @@ function renderPlaceholder(placeholder) {
 }
 function escapeHtml(value) {
   return value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
-}
-function escapeRegExp(value) {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 // src/markdown-converter.ts

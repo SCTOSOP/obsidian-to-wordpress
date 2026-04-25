@@ -38,7 +38,8 @@ export class ObsidianSpecialFormatTransformer implements MarkdownSpecialFormatTr
     });
 
     let output = html;
-    for (const placeholder of this.placeholders) {
+    const placeholders = [...this.placeholders].sort((left, right) => right.token.length - left.token.length);
+    for (const placeholder of placeholders) {
       output = replaceRenderedPlaceholder(output, placeholder.token, renderPlaceholder(placeholder));
     }
 
@@ -64,7 +65,7 @@ export class ObsidianSpecialFormatTransformer implements MarkdownSpecialFormatTr
   }
 
   private createPlaceholder(kind: PlaceholderKind, value: string): string {
-    const token = `OWP_SPECIAL_FORMAT_${this.placeholders.length}`;
+    const token = `@@OWP-SPECIAL-FORMAT-${this.placeholders.length}-END@@`;
     this.placeholders.push({ token, kind, value });
     return token;
   }
@@ -118,10 +119,30 @@ function transformInlineFormatting(markdown: string): string {
 }
 
 function replaceRenderedPlaceholder(html: string, token: string, replacement: string): string {
-  const escapedToken = escapeRegExp(token);
-  return html
-    .replace(new RegExp(`<p>\\s*${escapedToken}\\s*</p>`, "g"), replacement)
-    .replace(new RegExp(escapedToken, "g"), replacement);
+  const container = document.createElement("div");
+  container.innerHTML = html;
+
+  container.querySelectorAll("p").forEach((paragraph) => {
+    const text = paragraph.textContent?.trim();
+    if (text !== token) return;
+
+    const fragment = htmlToFragment(replacement);
+    paragraph.replaceWith(fragment);
+  });
+
+  const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT);
+  const textNodes: Text[] = [];
+  let current = walker.nextNode();
+  while (current) {
+    textNodes.push(current as Text);
+    current = walker.nextNode();
+  }
+
+  for (const textNode of textNodes) {
+    replaceTokenInTextNode(textNode, token, replacement);
+  }
+
+  return container.innerHTML;
 }
 
 function normalizeCodeBlocks(html: string): string {
@@ -328,6 +349,32 @@ function buildCopyButtonScript(copySourceId: string, copyToastId: string): strin
     "var area=document.createElement('textarea');area.value=text;area.setAttribute('readonly','readonly');area.style.position='fixed';area.style.opacity='0';document.body.appendChild(area);area.select();try{document.execCommand('copy');onSuccess();}finally{document.body.removeChild(area);}",
     "})(this);",
   ].join("");
+}
+
+function replaceTokenInTextNode(textNode: Text, token: string, replacement: string): void {
+  const parent = textNode.parentNode;
+  if (!parent) return;
+
+  const value = textNode.nodeValue ?? "";
+  if (!value.includes(token)) return;
+
+  const parts = value.split(token);
+  const fragment = document.createDocumentFragment();
+  for (let index = 0; index < parts.length; index += 1) {
+    const part = parts[index];
+    if (part) fragment.appendChild(document.createTextNode(part));
+    if (index < parts.length - 1) {
+      fragment.appendChild(htmlToFragment(replacement));
+    }
+  }
+
+  parent.replaceChild(fragment, textNode);
+}
+
+function htmlToFragment(html: string): DocumentFragment {
+  const template = document.createElement("template");
+  template.innerHTML = html;
+  return template.content.cloneNode(true) as DocumentFragment;
 }
 
 function normalizeTables(html: string): string {

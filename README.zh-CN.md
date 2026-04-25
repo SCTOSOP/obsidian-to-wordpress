@@ -6,7 +6,7 @@
 
 ## 发布状态
 
-当前版本目标：`1.1.0-beta`。
+当前版本目标：`1.1.1-beta`。
 
 这是一个早期测试版本，重点是验证完整发布链路、安全存储和常用内容渲染。后续功能会逐步补齐。
 
@@ -48,8 +48,9 @@
 
 当前转换器会在发布到 WordPress 前处理这些格式：
 
-- 代码块：渲染为 HTML 代码块，并规范化间距、边框、横向滚动和复制按钮样式。
+- 代码块：渲染为 HTML 代码块，并规范化间距、边框、横向滚动、Prism 友好的语言类和复制按钮样式。
 - 数学公式：`$...$` 和 `$$...$$` 会输出为兼容 MathJax 的结构；WordPress 前端需要启用 MathJax 或 KaTeX。
+- 数学公式占位符会避开 Markdown 强调语法和 HTML 属性，标题中的行内公式不会污染 `data-heading`，也不会留下数字占位符碎片。
 - Mermaid：推荐使用 ` ```mermaid ` 代码块；由 Obsidian Markdown 渲染器处理，适用于 `flowchart`、`sequenceDiagram`、`classDiagram`、`stateDiagram`、`gantt` 等 Mermaid 图。
 - 兼容旧语法：` ```flowchart ` 或 ` ```flow ` 会作为兼容别名保留源码块；新笔记建议统一使用 ` ```mermaid `。
 - 脚注：由 Obsidian Markdown 渲染器处理。
@@ -65,7 +66,7 @@
 
 - `main.js`
 - `manifest.json`
-- 或 `obsidian-to-wordpress-1.1.0-beta.zip`
+- 或 `obsidian-to-wordpress-1.1.1-beta.zip`
 
 把插件放入你的库：
 

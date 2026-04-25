@@ -132,7 +132,7 @@ async function handleMessage(request: JsonRpcRequest): Promise<void> {
       writeResult(request.id, {
         protocolVersion: params.protocolVersion ?? "2024-11-05",
         capabilities: { tools: { listChanged: false } },
-        serverInfo: { name: "obsidian-to-wordpress", version: "1.1.0-beta" },
+        serverInfo: { name: "obsidian-to-wordpress", version: "1.1.1-beta" },
       });
       return;
     }

@@ -6,7 +6,7 @@ Obsidian plugin for publishing the current note to a self-hosted WordPress site 
 
 ## Release Status
 
-Current release target: `1.1.0-beta`. This beta is intended for early testing; features will continue to be added incrementally.
+Current release target: `1.1.1-beta`. This beta is intended for early testing; features will continue to be added incrementally.
 
 ## Supported
 
@@ -45,8 +45,9 @@ Current release target: `1.1.0-beta`. This beta is intended for early testing; f
 
 The current converter handles these formats before uploading HTML to WordPress:
 
-- Code blocks are rendered as HTML code blocks with normalized spacing, border, overflow behavior, and compact copy-button styling.
+- Code blocks are rendered as HTML code blocks with normalized spacing, border, overflow behavior, Prism-friendly language classes, and compact copy-button styling.
 - Math formulas `$...$` and `$$...$$` are emitted with MathJax-compatible wrappers; WordPress needs MathJax or KaTeX enabled on the frontend.
+- Math placeholders use Markdown-safe delimiters and DOM text-node replacement so formulas inside headings do not corrupt `data-heading` attributes or leave numeric placeholder fragments.
 - Mermaid code fences, ` ```mermaid `, are passed through Obsidian's native Markdown renderer so the published HTML contains the rendered diagram output instead of raw Mermaid source. New notes should use ` ```mermaid ` for diagrams such as `flowchart`, `sequenceDiagram`, `classDiagram`, `stateDiagram`, and `gantt`.
 - Legacy ` ```flowchart ` or ` ```flow ` fences are accepted as compatibility aliases and emitted as preserved source blocks, but new notes should prefer ` ```mermaid `.
 - Footnotes are rendered by Obsidian's Markdown renderer.

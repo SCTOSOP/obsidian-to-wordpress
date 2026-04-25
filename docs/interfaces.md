@@ -285,8 +285,8 @@ class ObsidianSpecialFormatTransformer implements MarkdownSpecialFormatTransform
 
 Currently handled:
 
-- Code blocks: preserved through Obsidian's Markdown renderer, then postprocessed with stable inline styles for spacing, borders, overflow, and compact `.copy-code-button` placement.
-- Math formulas: `$...$` and `$$...$$` are protected and emitted as MathJax-compatible `\(...\)` / `\[...\]` HTML wrappers. WordPress still needs a MathJax or KaTeX frontend renderer.
+- Code blocks: preserved through Obsidian's Markdown renderer, then postprocessed with stable inline styles for spacing, borders, overflow, Prism-friendly language classes, and compact `.copy-code-button` placement.
+- Math formulas: `$...$` and `$$...$$` are protected and emitted as MathJax-compatible `\(...\)` / `\[...\]` HTML wrappers. Placeholders use Markdown-safe delimiters, are replaced through DOM text nodes only, and are processed longest-first to avoid HTML attribute corruption and placeholder-prefix collisions. WordPress still needs a MathJax or KaTeX frontend renderer.
 - Mermaid: fenced `mermaid` blocks are passed through Obsidian's native Markdown renderer so the published HTML contains the rendered diagram output instead of raw Mermaid source. This supports Mermaid diagram types such as `flowchart`, `sequenceDiagram`, `classDiagram`, `stateDiagram`, and `gantt`.
 - Compatibility aliases: fenced `flowchart` or `flow` blocks are emitted as `<pre class="obsidian-flowchart flowchart">...</pre>`, but new notes should prefer fenced `mermaid` blocks.
 - Footnotes: passed through Obsidian's Markdown renderer.

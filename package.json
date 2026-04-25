@@ -1,6 +1,6 @@
 {
   "name": "obsidian-to-wordpress",
-  "version": "1.1.0-beta",
+  "version": "1.1.1-beta",
   "description": "Modular Obsidian plugin for publishing current notes to self-hosted WordPress via REST API.",
   "main": "main.js",
   "scripts": {
